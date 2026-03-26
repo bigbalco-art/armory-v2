@@ -1271,7 +1271,7 @@ async function callClaude(prompt) {
     "gemini-2.5-flash"
   ];
 
-  const sysPrompt = "You are a product database assistant. Return ONLY a raw JSON object. No markdown, no explanation. Just JSON starting with { and ending with }.";
+  const sysPrompt = "You are a product database assistant. Return ONLY a raw JSON object. Do not use markdown backticks. Do not add any explanation. Start your response with { and end with }.";
   const fullPrompt = sysPrompt + "\n\n" + prompt;
 
   for(const model of models) {
@@ -1282,7 +1282,7 @@ async function callClaude(prompt) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           contents: [{ parts: [{ text: fullPrompt }] }],
-          generationConfig: { temperature: 0.1, maxOutputTokens: 500 },
+          generationConfig: { temperature: 0.1, maxOutputTokens: 1024 },
           safetySettings: [
             { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" },
             { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
@@ -1332,25 +1332,51 @@ async function callClaude(prompt) {
       ).trim();
       if(!t) { console.warn(model + ": empty response, full response:", JSON.stringify(j).substring(0,200)); continue; }
 
-      // Clean up markdown fences
+      // Clean up any markdown fences just in case
       t = t.replace(/```json/g,"").replace(/```/g,"").trim();
-      
-      // Find JSON object
-      const a = t.indexOf("{"), b = t.lastIndexOf("}");
-      if(a === -1 || b === -1) { 
-        console.warn(model + ": no JSON found in:", t.substring(0,200));
-        // Try to extract any JSON-like content
-        const match = t.match(/\{[^{}]*\}/);
-        if(match) {
-          try { JSON.parse(match[0]); return match[0]; } catch(e) {}
-        }
-        continue; 
-      }
 
-      const jsonStr = t.slice(a, b+1);
-      JSON.parse(jsonStr); // validate
+      // ─── Lenient JSON Parser ───────────────────────────────
+      // Step 1: Extract between first { and last }
+      const firstBrace = t.indexOf("{");
+      const lastBrace = t.lastIndexOf("}");
+      
+      if(firstBrace === -1) {
+        console.warn(model + ": no JSON found in response:", t.substring(0,200));
+        continue;
+      }
+      
+      let jsonStr = lastBrace > firstBrace ? t.slice(firstBrace, lastBrace+1) : t.slice(firstBrace);
+      
+      // Step 2: If parse fails, try auto-closing incomplete JSON
+      let parsed = null;
+      try {
+        parsed = JSON.parse(jsonStr);
+      } catch(e1) {
+        // Auto-fix: append missing closing braces up to 3 times
+        let fixed = jsonStr;
+        for(let fix = 0; fix < 3; fix++) {
+          // Remove any trailing incomplete key-value (cut at last comma or last complete value)
+          fixed = fixed.replace(/,?\s*"[^"]*"\s*:\s*"[^"]*$/, '');
+          fixed = fixed.replace(/,?\s*"[^"]*"\s*:\s*[^,}\s]*$/, '');
+          fixed += "}";
+          try {
+            parsed = JSON.parse(fixed);
+            jsonStr = fixed;
+            console.log(model + ": auto-fixed truncated JSON");
+            break;
+          } catch(e2) {
+            // keep trying
+          }
+        }
+      }
+      
+      if(!parsed) {
+        console.warn(model + ": could not parse JSON even after fix attempts:", t.substring(0,200));
+        continue;
+      }
+      
       console.log("✅ Success with:", model);
-      return jsonStr;
+      return JSON.stringify(parsed);
 
     } catch(e) {
       // If it's a specific error (not 404), stop trying and surface it
@@ -3739,7 +3765,7 @@ For this firearm: "${entry.name}" (${entry.manufacturer||''} ${entry.gunType||''
 The owner paid: $${entry.purchasePrice}
 
 Return ONLY this JSON, no markdown:
-{"marketValue":"current fair market value in USD as a number only e.g. 1250","trend":"one of: Appreciating / Stable / Depreciating","reason":"one sentence max explaining trend","confidence":"High/Medium/Low"}
+{"marketValue":"number only e.g. 1250","trend":"Appreciating or Stable or Depreciating","reason":"5 words max","confidence":"High or Medium or Low"}
 
 Be realistic. Common guns (Glock, M&P) depreciate. Collector guns (Python, vintage HK) appreciate. If unsure, say Low confidence.`;
 
@@ -3756,6 +3782,7 @@ Be realistic. Common guns (Glock, M&P) depreciate. Collector guns (Python, vinta
           data[idx].marketReason = parsed.reason || '';
           data[idx].marketConfidence = parsed.confidence || '';
           data[idx].marketUpdated = new Date().toLocaleDateString();
+          updateStats(); // Update UI in real-time after each successful parse
 
           const paid = parseFloat(entry.purchasePrice)||0;
           const diff = mv - paid;
