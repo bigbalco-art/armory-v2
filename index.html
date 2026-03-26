@@ -162,7 +162,15 @@ async function askGemini(prompt) {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${apiKey}`;
       const res = await fetch(url, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+        body: JSON.stringify({ 
+          contents: [{ parts: [{ text: prompt }] }],
+          safetySettings: [
+            { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" },
+            { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
+            { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
+            { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" }
+          ]
+        })
       });
       const json = await res.json();
       if(!res.ok) continue;
@@ -178,15 +186,20 @@ async function startBulkLookup() {
   document.getElementById('bulkProgressOverlay').classList.add('open');
   const log = document.getElementById('bulkResultLog');
   const bar = document.getElementById('bulkBar');
+  const status = document.getElementById('bulkStatus');
   let n = 0;
   for(const e of targets) {
+    status.innerText = `Analyzing Item ${n+1} of ${targets.length}...`;
     try {
-      const res = await askGemini(`Return ONLY JSON for UPC ${e.upc}: {"manufacturer":"","caliber":""}`);
-      const parsed = JSON.parse(res);
+      const prompt = `Return ONLY a valid JSON object for this firearm (UPC: ${e.upc}, MPN: ${e.mpn}). If unknown, leave field empty: {"official_name":"","manufacturer":"","caliber":"","gunType":"","description":""}`;
+      const resText = await askGemini(prompt);
+      const parsed = JSON.parse(resText);
       const idx = data.findIndex(d => d.id === e.id);
-      data[idx] = {...data[idx], ...parsed};
-      log.innerHTML += `<div style="color:var(--green)">✓ ${e.name} updated</div>`;
-      await saveAll();
+      if(idx !== -1) {
+        data[idx] = {...data[idx], ...parsed};
+        log.innerHTML += `<div style="color:var(--green)">✓ ${e.name} updated</div>`;
+        await saveAll();
+      }
     } catch(err) { log.innerHTML += `<div style="color:var(--red)">✗ ${e.name} failed</div>`; }
     n++; bar.style.width = `${(n/targets.length)*100}%`;
     await new Promise(r => setTimeout(r, 4200));
@@ -234,7 +247,7 @@ function showKeySetup(promptUser) {
 function openAddModal() { editingId = null; document.getElementById('editModal').classList.add('open'); }
 function openEditModal(id) {
   editingId = id; const i = data.find(d => d.id === id);
-  ['name','mfr','cal','upc','mpn','serial','price','optic','desc'].forEach(f => {
+  ['name','mfr', 'cal','upc','mpn','serial','price','optic','desc'].forEach(f => {
     const el = document.getElementById('m_'+f);
     if(el) el.value = i[f] || "";
   });
