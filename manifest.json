@@ -1,0 +1,21 @@
+{
+  "name": "Armory — Personal Firearm Registry",
+  "short_name": "Armory",
+  "start_url": "/armory-v2/",
+  "display": "standalone",
+  "background_color": "#1c3557",
+  "theme_color": "#1c3557",
+  "description": "Personal firearm inventory management with AI lookup and Firebase sync.",
+  "icons": [
+    {
+      "src": "icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
