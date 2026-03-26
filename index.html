@@ -1300,14 +1300,22 @@ async function callClaude(prompt) {
         const code = r.status;
         const msg = j?.error?.message || ("HTTP " + code);
         console.warn(model + " failed:", code, msg);
-        if(code === 401 || code === 403) throw new Error("API key invalid — check Google Cloud Console");
+        if(code === 401 || code === 403) throw new Error("Auth error: " + msg.substring(0, 100));
         if(code === 429) {
           console.warn("Rate limited — waiting 35s before retry...");
           await new Promise(r => setTimeout(r, 35000));
           continue; // retry same model
         }
         if(code === 404) { continue; } // model not found, try next
-        throw new Error(msg.substring(0, 80));
+        if(code === 400) {
+          // Check if it's a key expiry or billing issue
+          if(msg.toLowerCase().includes('expired') || msg.toLowerCase().includes('billing') || msg.toLowerCase().includes('quota')) {
+            throw new Error("API error: " + msg.substring(0, 100));
+          }
+          console.warn(model + " 400 error:", msg);
+          continue; // try next model
+        }
+        throw new Error(msg.substring(0, 100));
       }
 
       // Check for blocked content
