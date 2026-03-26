@@ -1322,12 +1322,30 @@ async function callClaude(prompt) {
         continue;
       }
 
-      let t = (j.candidates?.[0]?.content?.parts?.[0]?.text || "").trim();
-      if(!t) { console.warn(model + ": empty response"); continue; }
+      // Try multiple response paths for different Gemini versions
+      let t = (
+        j.candidates?.[0]?.content?.parts?.[0]?.text ||
+        j.candidates?.[0]?.output ||
+        j.text ||
+        j.content ||
+        ""
+      ).trim();
+      if(!t) { console.warn(model + ": empty response, full response:", JSON.stringify(j).substring(0,200)); continue; }
 
+      // Clean up markdown fences
       t = t.replace(/```json/g,"").replace(/```/g,"").trim();
+      
+      // Find JSON object
       const a = t.indexOf("{"), b = t.lastIndexOf("}");
-      if(a === -1 || b === -1) { console.warn(model + ": no JSON in response:", t.substring(0,80)); continue; }
+      if(a === -1 || b === -1) { 
+        console.warn(model + ": no JSON found in:", t.substring(0,200));
+        // Try to extract any JSON-like content
+        const match = t.match(/\{[^{}]*\}/);
+        if(match) {
+          try { JSON.parse(match[0]); return match[0]; } catch(e) {}
+        }
+        continue; 
+      }
 
       const jsonStr = t.slice(a, b+1);
       JSON.parse(jsonStr); // validate
