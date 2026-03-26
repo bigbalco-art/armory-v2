@@ -1260,140 +1260,89 @@ const STORAGE_KEY = 'armory_v2';
 const GEMINI_KEY = localStorage.getItem("armory_gemini_key") || "";
 let _aiSearching = false;
 
+// ─── Lenient JSON Parser ─────────────────────────────────────
+function parseLenientJSON(rawText) {
+  try {
+    let t = rawText.trim();
+    t = t.replace(/```json/g,"").replace(/```/g,"").trim();
+    const firstBrace = t.indexOf('{');
+    const lastBrace = t.lastIndexOf('}');
+    if(firstBrace !== -1) {
+      t = lastBrace > firstBrace ? t.substring(firstBrace, lastBrace+1) : t.substring(firstBrace);
+    }
+    let iterations = 0;
+    let testText = t;
+    while(iterations < 5) {
+      try { return JSON.parse(testText); } catch(e) {
+        testText = testText.replace(/,?\s*"[^"]*"\s*:\s*"[^"]*$/, '');
+        testText = testText.replace(/,?\s*"[^"]*"\s*:\s*[^,}\s]*$/, '');
+        if(!testText.endsWith('}')) testText += '}';
+        else break;
+      }
+      iterations++;
+    }
+    return JSON.parse(t);
+  } catch(err) {
+    console.error("parseLenientJSON failed:", rawText.substring(0,200));
+    throw new Error("No valid JSON found in AI response.");
+  }
+}
+
 async function callClaude(prompt) {
   const GEMINI_KEY = localStorage.getItem("armory_gemini_key") || "";
   if(!GEMINI_KEY) {
     showKeySetup(true);
     throw new Error("No AI key set — click ⚙️ in toolbar to add your Gemini key");
   }
-  // Confirmed stable models for v1beta AI Studio free tier
-  const models = [
-    "gemini-2.5-flash"
-  ];
 
-  const sysPrompt = "You are a product database assistant. Return ONLY a raw JSON object. Do not use markdown backticks. Do not add any explanation. Start your response with { and end with }.";
-  const fullPrompt = sysPrompt + "\n\n" + prompt;
+  const model = "gemini-2.5-flash";
+  const fullPrompt = "You are a product database assistant. Return ONLY a raw JSON object. Do not use markdown backticks. Start with { and end with }. If you must cut off early, close all open strings and braces.\n\n" + prompt;
 
-  for(const model of models) {
-    try {
-      const url = "https://generativelanguage.googleapis.com/v1beta/models/" + model + ":generateContent?key=" + GEMINI_KEY;
-      const r = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: fullPrompt }] }],
-          generationConfig: { temperature: 0.1, maxOutputTokens: 1024 },
-          safetySettings: [
-            { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" },
-            { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
-            { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
-            { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" }
-          ]
-        })
-      });
+  try {
+    const url = "https://generativelanguage.googleapis.com/v1beta/models/" + model + ":generateContent?key=" + GEMINI_KEY;
+    const r = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: fullPrompt }] }],
+        generationConfig: { temperature: 0.1, maxOutputTokens: 1024 },
+        safetySettings: [
+          { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" },
+          { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
+          { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
+          { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" }
+        ]
+      })
+    });
 
-      const j = await r.json();
+    const j = await r.json();
 
-      if(!r.ok) {
-        const code = r.status;
-        const msg = j?.error?.message || ("HTTP " + code);
-        console.warn(model + " failed:", code, msg);
-        if(code === 401 || code === 403) throw new Error("Auth error: " + msg.substring(0, 100));
-        if(code === 429) {
-          console.warn("Rate limited — waiting 35s before retry...");
-          await new Promise(r => setTimeout(r, 35000));
-          continue; // retry same model
-        }
-        if(code === 404) { continue; } // model not found, try next
-        if(code === 400) {
-          // Check if it's a key expiry or billing issue
-          if(msg.toLowerCase().includes('expired') || msg.toLowerCase().includes('billing') || msg.toLowerCase().includes('quota')) {
-            throw new Error("API error: " + msg.substring(0, 100));
-          }
-          console.warn(model + " 400 error:", msg);
-          continue; // try next model
-        }
-        throw new Error(msg.substring(0, 100));
+    if(!r.ok) {
+      const code = r.status;
+      const msg = j?.error?.message || ("HTTP " + code);
+      if(code === 429) {
+        console.warn("Rate limited — waiting 35s...");
+        await new Promise(res => setTimeout(res, 35000));
+        return callClaude(prompt);
       }
-
-      // Check for blocked content
-      if(j.promptFeedback?.blockReason) {
-        console.warn(model + " blocked:", j.promptFeedback.blockReason);
-        continue;
-      }
-
-      // Try multiple response paths for different Gemini versions
-      let t = (
-        j.candidates?.[0]?.content?.parts?.[0]?.text ||
-        j.candidates?.[0]?.output ||
-        j.text ||
-        j.content ||
-        ""
-      ).trim();
-      if(!t) { console.warn(model + ": empty response, full response:", JSON.stringify(j).substring(0,200)); continue; }
-
-      // Clean up any markdown fences just in case
-      t = t.replace(/```json/g,"").replace(/```/g,"").trim();
-
-      // ─── Lenient JSON Parser ───────────────────────────────
-      // Step 1: Extract between first { and last }
-      const firstBrace = t.indexOf("{");
-      const lastBrace = t.lastIndexOf("}");
-      
-      if(firstBrace === -1) {
-        console.warn(model + ": no JSON found in response:", t.substring(0,200));
-        continue;
-      }
-      
-      let jsonStr = lastBrace > firstBrace ? t.slice(firstBrace, lastBrace+1) : t.slice(firstBrace);
-      
-      // Step 2: If parse fails, try auto-closing incomplete JSON
-      let parsed = null;
-      try {
-        parsed = JSON.parse(jsonStr);
-      } catch(e1) {
-        // Auto-fix: append missing closing braces up to 3 times
-        let fixed = jsonStr;
-        for(let fix = 0; fix < 3; fix++) {
-          // Remove any trailing incomplete key-value (cut at last comma or last complete value)
-          fixed = fixed.replace(/,?\s*"[^"]*"\s*:\s*"[^"]*$/, '');
-          fixed = fixed.replace(/,?\s*"[^"]*"\s*:\s*[^,}\s]*$/, '');
-          fixed += "}";
-          try {
-            parsed = JSON.parse(fixed);
-            jsonStr = fixed;
-            console.log(model + ": auto-fixed truncated JSON");
-            break;
-          } catch(e2) {
-            // keep trying
-          }
-        }
-      }
-      
-      if(!parsed) {
-        console.warn(model + ": could not parse JSON even after fix attempts:", t.substring(0,200));
-        continue;
-      }
-      
-      console.log("✅ Success with:", model);
-      return JSON.stringify(parsed);
-
-    } catch(e) {
-      // If it's a specific error (not 404), stop trying and surface it
-      if(e.message.includes("API key") || e.message.includes("Rate limit")) {
-        showToast("❌ " + e.message);
-        throw e;
-      }
-      console.warn(model + " error:", e.message);
-      // For last model, throw the error
-      if(model === models[models.length - 1]) throw e;
+      throw new Error("API error " + code + ": " + msg.substring(0, 100));
     }
+
+    if(j.promptFeedback?.blockReason) throw new Error("Blocked: " + j.promptFeedback.blockReason);
+
+    const text = (j.candidates?.[0]?.content?.parts?.[0]?.text || "").trim();
+    if(!text) throw new Error("Empty response from Gemini");
+
+    const parsed = parseLenientJSON(text);
+    console.log("✅ Success with:", model);
+    return JSON.stringify(parsed);
+
+  } catch(e) {
+    console.error("callClaude error:", e.message);
+    showToast("❌ " + e.message.substring(0, 80));
+    throw e;
   }
-
-  throw new Error("All Gemini models failed — check console for details");
 }
-
-
 let data = [];
 let editingId = null;
 let sortCol = 'num';
