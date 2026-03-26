@@ -498,4 +498,156 @@ async function startBulkLookup() {
 
   if(!confirm(`AI will attempt to find details for ${targets.length} items. This takes ~4 seconds per item. Continue?`)) return;
 
-  const overlay = document.
+  const overlay = document.getElementById('bulkProgressOverlay');
+  const bar = document.getElementById('bulkBar');
+  const log = document.getElementById('bulkResultLog');
+  const status = document.getElementById('bulkStatus');
+  
+  overlay.classList.add('open');
+  log.innerHTML = "";
+  
+  let n = 0;
+  for(const e of targets) {
+    status.innerText = `Analyzing Item ${n+1} of ${targets.length}...`;
+    try {
+      const prompt = `Return ONLY a valid JSON object for this firearm (UPC: ${e.upc}, MPN: ${e.mpn}). If unknown, leave field empty: {"official_name":"","manufacturer":"","caliber":"","gunType":"","description":""}`;
+      const resText = await askGemini(prompt);
+      const parsed = JSON.parse(resText);
+      
+      const idx = data.findIndex(d => d.id === e.id);
+      if(idx !== -1) {
+        data[idx] = {...data[idx], ...parsed};
+        log.innerHTML += `<div style="color:var(--green)">✓ ${e.name.substring(0,30)} updated</div>`;
+        await saveAll();
+      }
+    } catch(err) {
+      log.innerHTML += `<div style="color:var(--red)">✗ ${e.name.substring(0,30)} - ${err.message}</div>`;
+    }
+    n++;
+    bar.style.width = `${(n/targets.length)*100}%`;
+    log.scrollTop = log.scrollHeight;
+    await new Promise(r => setTimeout(r, 4200)); 
+  }
+  status.innerText = "Processing Complete.";
+}
+
+// ─── UI Rendering & Other Functions ──────────────────────────────
+function renderTable() {
+  const body = document.getElementById('inventoryBody');
+  const grid = document.getElementById('mobileGrid');
+  if(!body || !grid) return;
+  body.innerHTML = ""; grid.innerHTML = "";
+
+  filtered.forEach(item => {
+    const row = document.createElement('tr');
+    row.innerHTML = `
+      <td><img src="https://via.placeholder.com/60x40/112240/64ffda?text=IMG" class="row-image"></td>
+      <td>
+        <div style="font-weight: 600;">${item.name}</div>
+        <div style="font-size: 0.75rem; color: var(--slate);">${item.upc || item.mpn || 'No Code'}</div>
+      </td>
+      <td>${item.manufacturer || '-'}</td>
+      <td>${item.caliber || '-'}</td>
+      <td class="private-data">${privacyMode ? '•••••' : (item.serial || '—')}</td>
+      <td><span class="badge ${item.status === 'In Safe' ? 'badge-safe' : 'badge-range'}">${item.status}</span></td>
+      <td><button onclick="openEditModal('${item.id}')">Edit</button></td>
+    `;
+    body.appendChild(row);
+  });
+  updateStats();
+}
+
+function updateStats() {
+  const countEl = document.getElementById('statCount');
+  const valueEl = document.getElementById('statValue');
+  if(countEl) countEl.textContent = data.length;
+  if(valueEl) {
+    const val = data.reduce((s, i) => s + (parseFloat(i.price) || 0), 0);
+    valueEl.textContent = `$${val.toLocaleString(undefined, {minimumFractionDigits:2})}`;
+  }
+}
+
+function handleSearch() {
+  const q = document.getElementById('searchInput').value.toLowerCase();
+  filtered = data.filter(i => 
+    i.name.toLowerCase().includes(q) || 
+    (i.upc && i.upc.includes(q)) || 
+    (i.caliber && i.caliber.toLowerCase().includes(q))
+  );
+  renderTable();
+}
+
+function togglePrivacy() {
+  privacyMode = !privacyMode;
+  document.body.classList.toggle('privacy-active', privacyMode);
+  const btn = document.getElementById('privacyBtn');
+  if(btn) btn.textContent = privacyMode ? "🙈 Privacy: ON" : "👁️ Privacy: OFF";
+  renderTable();
+}
+
+function showKeySetup(promptUser) {
+  const current = localStorage.getItem("armory_gemini_key") || "";
+  if(promptUser) {
+    const val = prompt("Enter Gemini API Key (Billing-enabled):", current);
+    if(val !== null) {
+      localStorage.setItem("armory_gemini_key", val.trim());
+      location.reload();
+    }
+  }
+}
+
+// Modal Management
+function openEditModal(id) {
+  editingId = id;
+  const item = data.find(d => d.id === id);
+  if(!item) return;
+  document.getElementById('m_name').value = item.name || "";
+  document.getElementById('m_mfr').value = item.manufacturer || "";
+  document.getElementById('m_cal').value = item.caliber || "";
+  document.getElementById('m_upc').value = item.upc || "";
+  document.getElementById('m_mpn').value = item.mpn || "";
+  document.getElementById('m_serial').value = item.serial || "";
+  document.getElementById('m_price').value = item.price || "";
+  document.getElementById('m_status').value = item.status || "In Safe";
+  document.getElementById('m_optic').value = item.optic || "";
+  document.getElementById('m_desc').value = item.desc || "";
+  document.getElementById('editModal').classList.add('open');
+}
+
+function openAddModal() { editingId = null; document.getElementById('editModal').classList.add('open'); }
+function closeModal() { document.getElementById('editModal').classList.remove('open'); }
+
+async function saveItem() {
+  const item = {
+    id: editingId || Date.now().toString(),
+    name: document.getElementById('m_name').value,
+    manufacturer: document.getElementById('m_mfr').value,
+    caliber: document.getElementById('m_cal').value,
+    upc: document.getElementById('m_upc').value,
+    mpn: document.getElementById('m_mpn').value,
+    serial: document.getElementById('m_serial').value,
+    price: document.getElementById('m_price').value,
+    status: document.getElementById('m_status').value,
+    optic: document.getElementById('m_optic').value,
+    desc: document.getElementById('m_desc').value,
+  };
+  if(editingId) {
+    const idx = data.findIndex(d => d.id === editingId);
+    data[idx] = item;
+  } else {
+    data.push(item);
+  }
+  await saveAll();
+  closeModal();
+}
+
+async function startApp() {
+  await initData();
+  filtered = [...data];
+  renderTable();
+}
+
+document.addEventListener('firebase-ready', startApp);
+</script>
+</body>
+</html>
