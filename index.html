@@ -30,14 +30,20 @@
 
     window._fbSave = async function(dataArr) {
       try {
-        // Strip photos before saving to Firebase (too large for Firestore 1MB limit)
-        // Photos are kept in localStorage only
-        const dataNoPhotos = dataArr.map(d => {
+        // We keep the photo links (URLs) but don't save the massive raw image data
+        // to Firestore. This keeps your 343 entries loading lightning fast.
+        const cloudSyncData = dataArr.map(d => {
           const copy = Object.assign({}, d);
-          if(copy.photo && copy.photo.length > 1000) delete copy.photo;
+          // If it's a small cloud link (http...), keep it. 
+          // If it's a giant raw image string, strip it to save space.
+          if(copy.photoUrl && copy.photoUrl.startsWith('http')) {
+              // Keep the cloud link!
+          } else if(copy.photo && copy.photo.length > 1000) {
+              delete copy.photo;
+          }
           return copy;
         });
-        await DOC_REF.set({ data: dataNoPhotos, updated: new Date().toISOString() });
+        await DOC_REF.set({ data: cloudSyncData, updated: new Date().toISOString() });
         return true;
       } catch(e) {
         console.error("Firebase save error:", e);
@@ -1902,7 +1908,7 @@ function triggerPhotoUpload(id) {
   if(input) input.click();
 }
 
-async function handlePhotoUpload(id, input) {
+async async function handlePhotoUpload(id, input) {
     const file = input.files[0];
     if (!file) return;
 
@@ -1913,7 +1919,7 @@ async function handlePhotoUpload(id, input) {
         const img = new Image();
         img.onload = function() {
             const canvas = document.createElement('canvas');
-            const MAX_SIZE = 800; 
+            const MAX_SIZE = 800; // Efficient size for 5GB limit
             let width = img.width;
             let height = img.height;
 
@@ -1930,15 +1936,28 @@ async function handlePhotoUpload(id, input) {
 
             canvas.toBlob(async (blob) => {
                 try {
-                    // This sends it to your Blaze storage bucket
                     const storageRef = firebase.storage().ref(`firearms/${id}.jpg`);
                     const snapshot = await storageRef.put(blob);
                     const downloadURL = await snapshot.ref.getDownloadURL();
 
-                    // This updates the specific firearm in your 343 list
+                    // Update the Firestore record with the new URL
                     await db.collection('firearms').doc(id.toString()).update({
                         photoUrl: downloadURL,
                         needPic: false
+                    });
+
+                    showToast('✅ Saved to Cloud (Slim)');
+                    loadFirearms(); 
+                } catch (error) {
+                    console.error("Cloud Error:", error);
+                    showToast('❌ Cloud Error');
+                }
+            }, 'image/jpeg', 0.7); // 70% quality is the storage sweet spot
+        };
+        img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+}
                     });
 
                     showToast('✅ Saved to Cloud (Slim)');
