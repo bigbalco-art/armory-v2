@@ -4133,7 +4133,8 @@ if('serviceWorker' in navigator) {
         <span style="font-size:11px;color:var(--muted);">Wrong type? Toggle below.</span>
         <button class="btn btn-ghost btn-sm" id="riToggleTypeBtn" onclick="riToggleReceiptType()" style="font-size:11px;display:none;">Switch Type</button>
       </div>
-      <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:8px;text-transform:uppercase;letter-spacing:0.5px;">Extracted Data — Review &amp; Correct</div>
+      <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:4px;text-transform:uppercase;letter-spacing:0.5px;">Extracted Data — Review &amp; Correct</div>
+      <div id="riFirearmCounter" style="font-size:11px;color:#7c3aed;font-weight:600;margin-bottom:8px;"></div>
       <div class="ri-extracted-grid">
         <div class="ri-field" style="grid-column:1/-1;">
           <label>Firearm / Model Name</label>
@@ -4158,6 +4159,12 @@ if('serviceWorker' in navigator) {
         <div class="ri-field">
           <label>Caliber</label>
           <input type="text" id="riCaliber" placeholder="e.g. 9mm">
+        </div>
+        <div class="ri-field" style="grid-column:1/-1;">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            <button class="btn btn-ghost btn-sm" onclick="riLookupUPC()" style="font-size:11px;">🔍 Lookup UPC/MPN</button>
+            <span id="riUpcLookupStatus" style="font-size:11px;color:var(--muted);"></span>
+          </div>
         </div>
         <!-- Purchase receipt fields (shown when type = purchase) -->
         <div class="ri-field ri-purchase-fields">
@@ -4196,7 +4203,8 @@ if('serviceWorker' in navigator) {
 
     <!-- STEP 4: Match to existing entry -->
     <div class="ri-step" id="riStep4">
-      <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:12px;text-transform:uppercase;letter-spacing:0.5px;">Select Matching Entry in Your Tracker</div>
+      <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:4px;text-transform:uppercase;letter-spacing:0.5px;">Select Matching Entry in Your Tracker</div>
+      <div id="riMatchCounter" style="font-size:11px;color:#7c3aed;font-weight:600;margin-bottom:8px;"></div>
       <div style="font-size:12px;color:var(--muted);margin-bottom:14px;">Claude found these likely matches based on the firearm name. Select the correct one, or choose "New Entry" to add as new.</div>
       <div id="riMatchList" style="display:flex;flex-direction:column;gap:8px;"></div>
       <div class="ri-actions" style="margin-top:16px;">
@@ -4224,12 +4232,62 @@ if('serviceWorker' in navigator) {
 <script>
 // ─── FFL Receipt Import ────────────────────────────────────────
 let _riImageBase64 = null;
-let _riExtracted = {};
-let _riSelectedMatchId = null; // null = new entry
+let _riFirearms = [];       // all firearms found on the receipt
+let _riCurrentIndex = 0;   // which one we're reviewing now
+let _riExtracted = {};      // current firearm being reviewed
+let _riSelectedMatchId = undefined;
+
+// ─── Anthropic Key helpers ─────────────────────────────────────
+function getAnthropicKey() {
+  return localStorage.getItem('armory_anthropic_key') || '';
+}
+
+function showAnthropicKeySetup(onSuccess) {
+  const existing = getAnthropicKey();
+  const old = document.getElementById('anthropicKeyDlg');
+  if (old) old.remove();
+  const dlg = document.createElement('div');
+  dlg.id = 'anthropicKeyDlg';
+  dlg.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:9999;display:flex;align-items:center;justify-content:center;';
+  dlg.innerHTML = `
+    <div style="background:var(--surface);border-radius:14px;padding:28px 28px 24px;max-width:420px;width:92%;box-shadow:0 8px 40px rgba(0,0,0,0.25);border-top:4px solid #7c3aed;">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
+        <span style="font-size:22px;">📄</span>
+        <div style="font-size:17px;font-weight:700;color:#7c3aed;">Receipt Scanner — API Key</div>
+      </div>
+      <div style="color:var(--muted);font-size:13px;margin-bottom:18px;line-height:1.6;">
+        ${existing
+          ? 'Your Anthropic key is saved on this device. Update or clear it below.'
+          : 'Receipt scanning uses Claude Vision. Enter your Anthropic API key to continue.<br><a href="https://console.anthropic.com/settings/keys" target="_blank" style="color:#7c3aed;">console.anthropic.com → API Keys</a>'}
+      </div>
+      <input id="anthropicKeyInput" type="password" placeholder="Paste key (sk-ant-...)"
+        style="width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;font-family:monospace;margin-bottom:16px;background:var(--bg);color:var(--text);box-sizing:border-box;"
+        value="${existing}">
+      <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">
+        ${existing ? '<button id="anthKeyClear" style="padding:8px 14px;border-radius:6px;border:1px solid var(--red);background:none;color:var(--red);cursor:pointer;font-size:13px;">Clear Key</button>' : ''}
+        <button id="anthKeyCancel" style="padding:8px 14px;border-radius:6px;border:1px solid var(--border);background:none;color:var(--text);cursor:pointer;font-size:13px;">Cancel</button>
+        <button id="anthKeySave" style="padding:8px 16px;border-radius:6px;border:none;background:#7c3aed;color:#fff;cursor:pointer;font-size:13px;font-weight:600;">Save & Scan</button>
+      </div>
+    </div>`;
+  document.body.appendChild(dlg);
+  dlg.querySelector('#anthKeySave').onclick = () => {
+    const val = dlg.querySelector('#anthropicKeyInput').value.trim();
+    if (!val || !val.startsWith('sk-ant-')) { showToast('Please paste a valid Anthropic key (starts with sk-ant-)'); return; }
+    localStorage.setItem('armory_anthropic_key', val);
+    dlg.remove();
+    showToast('✅ Key saved — scanning receipt…');
+    if (onSuccess) onSuccess();
+  };
+  dlg.querySelector('#anthKeyCancel').onclick = () => dlg.remove();
+  const clearBtn = dlg.querySelector('#anthKeyClear');
+  if (clearBtn) clearBtn.onclick = () => { localStorage.removeItem('armory_anthropic_key'); dlg.remove(); showToast('Key cleared'); };
+}
 
 function openReceiptImport() {
   riGoStep(1);
   _riImageBase64 = null;
+  _riFirearms = [];
+  _riCurrentIndex = 0;
   _riExtracted = {};
   _riSelectedMatchId = undefined;
   document.getElementById('receiptImportOverlay').classList.add('open');
@@ -4251,202 +4309,224 @@ async function riHandleFile(input) {
   reader.onload = async function(e) {
     const dataUrl = e.target.result;
     _riImageBase64 = dataUrl.split(',')[1];
-    // Show preview in step 2 and 3
     document.getElementById('riPreviewImg').src = dataUrl;
     document.getElementById('riPreviewImg3').src = dataUrl;
     riGoStep(2);
+    const key = getAnthropicKey();
+    if (!key) { showAnthropicKeySetup(() => riScanReceipt()); return; }
     await riScanReceipt();
   };
   reader.readAsDataURL(file);
   input.value = '';
 }
 
-// ─── Anthropic Key helpers (mirrors Gemini key pattern) ──────
-function getAnthropicKey() {
-  return localStorage.getItem("armory_anthropic_key") || "";
-}
-
-function showAnthropicKeySetup(onSuccess) {
-  const existing = getAnthropicKey();
-  const old = document.getElementById('anthropicKeyDlg');
-  if (old) old.remove();
-
-  const dlg = document.createElement("div");
-  dlg.id = "anthropicKeyDlg";
-  dlg.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:9999;display:flex;align-items:center;justify-content:center;";
-  dlg.innerHTML = `
-    <div style="background:var(--surface);border-radius:14px;padding:28px 28px 24px;max-width:420px;width:92%;box-shadow:0 8px 40px rgba(0,0,0,0.25);border-top:4px solid #7c3aed;">
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
-        <span style="font-size:22px;">📄</span>
-        <div style="font-size:17px;font-weight:700;color:#7c3aed;">Receipt Scanner — API Key</div>
-      </div>
-      <div style="color:var(--muted);font-size:13px;margin-bottom:18px;line-height:1.6;">
-        ${existing
-          ? 'Your Anthropic API key is saved on this device. You can update or clear it below.'
-          : 'The receipt scanner uses Claude Vision to read your receipts.<br>Enter your Anthropic API key to continue.<br><a href="https://console.anthropic.com/settings/keys" target="_blank" style="color:#7c3aed;">console.anthropic.com → API Keys</a>'}
-      </div>
-      <input id="anthropicKeyInput" type="password" placeholder="Paste Anthropic API key (sk-ant-...)"
-        style="width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;font-family:monospace;margin-bottom:16px;background:var(--bg);color:var(--text);box-sizing:border-box;"
-        value="${existing}">
-      <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">
-        ${existing ? '<button id="anthKeyClear" style="padding:8px 14px;border-radius:6px;border:1px solid var(--red);background:none;color:var(--red);cursor:pointer;font-size:13px;">Clear Key</button>' : ''}
-        <button id="anthKeyCancel" style="padding:8px 14px;border-radius:6px;border:1px solid var(--border);background:none;color:var(--text);cursor:pointer;font-size:13px;">Cancel</button>
-        <button id="anthKeySave" style="padding:8px 16px;border-radius:6px;border:none;background:#7c3aed;color:#fff;cursor:pointer;font-size:13px;font-weight:600;">Save & Scan</button>
-      </div>
-    </div>`;
-  document.body.appendChild(dlg);
-
-  dlg.querySelector("#anthKeySave").onclick = () => {
-    const val = dlg.querySelector("#anthropicKeyInput").value.trim();
-    if (!val || !val.startsWith("sk-ant-")) { showToast("Please paste a valid Anthropic key (starts with sk-ant-)"); return; }
-    localStorage.setItem("armory_anthropic_key", val);
-    dlg.remove();
-    showToast("✅ Anthropic key saved — scanning receipt…");
-    if (onSuccess) onSuccess();
-  };
-  dlg.querySelector("#anthKeyCancel").onclick = () => dlg.remove();
-  const clearBtn = dlg.querySelector("#anthKeyClear");
-  if (clearBtn) clearBtn.onclick = () => {
-    localStorage.removeItem("armory_anthropic_key");
-    dlg.remove();
-    showToast("Anthropic key cleared");
-  };
+function detectMediaType(b64) {
+  try {
+    const head = atob(b64.substring(0, 16));
+    if (head.charCodeAt(0) === 0xFF && head.charCodeAt(1) === 0xD8) return 'image/jpeg';
+    if (head.startsWith('\x89PNG')) return 'image/png';
+    if (head.startsWith('GIF')) return 'image/gif';
+    if (head.startsWith('RIFF')) return 'image/webp';
+  } catch(e) {}
+  return 'image/jpeg';
 }
 
 async function riScanReceipt() {
-  // Check for saved Anthropic key — prompt if missing
   const anthropicKey = getAnthropicKey();
-  if (!anthropicKey) {
-    showAnthropicKeySetup(() => riScanReceipt());
-    return;
-  }
+  if (!anthropicKey) { showAnthropicKeySetup(() => riScanReceipt()); return; }
 
   const statusEl = document.getElementById('riScanStatus');
-  const rawEl = document.getElementById('riRawText');
   statusEl.innerHTML = '<span class="ri-spinner"></span>Analyzing receipt with Claude Vision…';
-  rawEl.style.display = 'none';
-
-  // Detect actual image format from magic bytes so PNG/WebP gallery photos work too
-  function detectMediaType(b64) {
-    try {
-      const head = atob(b64.substring(0, 16));
-      if (head.charCodeAt(0) === 0xFF && head.charCodeAt(1) === 0xD8) return 'image/jpeg';
-      if (head.startsWith('\x89PNG')) return 'image/png';
-      if (head.startsWith('GIF')) return 'image/gif';
-      if (head.startsWith('RIFF')) return 'image/webp';
-    } catch(e) {}
-    return 'image/jpeg';
-  }
+  document.getElementById('riRawText').style.display = 'none';
 
   try {
-    const prompt = `You are an FFL (Federal Firearms Licensee) receipt expert. Analyze this image carefully.
+    const prompt = `You are an FFL receipt expert. This receipt may contain ONE or MULTIPLE firearms.
 
-CRITICAL: First determine if this is:
-- An "FFL" receipt (transfer/pickup receipt from an FFL dealer when the buyer purchased online — shows an FFL transfer fee, NOT the actual gun price)
-- A "purchase" receipt (direct purchase at a store — shows the actual gun purchase price)
+Determine receipt type:
+- "ffl": transfer receipt from FFL dealer — shows FFL/transfer fee ($15–$75), Form 4473, pickup date. Fee is NOT the gun price.
+- "purchase": direct store purchase — shows actual firearm prices ($300–$3000+).
 
-FFL receipts typically show: "transfer fee", "FFL fee", "Form 4473", small amounts like $15–$75, and a pickup/transfer date.
-Purchase receipts typically show: the actual firearm price (usually $300–$3000+), item description with price, store name/invoice.
+IMPORTANT — Model name rules:
+- DO NOT include store inventory/tracking numbers like "G-I-1234", "INV-###", "ITEM-###", or any alphanumeric codes that look like internal store references.
+- The model name should be the actual manufacturer model name (e.g. "Glock 19 Gen5 MOS", "Beretta 92X Performance").
+- MPN/model number should be the manufacturer's part number, NOT the store's inventory code.
 
-Return ONLY a JSON object with no markdown or extra text:
+Return ONLY a raw JSON object — no markdown, no backticks:
 {
   "receiptType": "ffl" or "purchase",
   "receiptTypeConfidence": "high" or "medium" or "low",
-  "name": "Full firearm model name as printed (e.g. Glock 19 Gen5 MOS)",
-  "manufacturer": "Manufacturer name only (e.g. Glock, Colt, Beretta)",
-  "serial": "Serial number exactly as printed",
-  "upc": "UPC or barcode number (12+ digits if visible)",
-  "mpn": "Model/part number or item SKU",
-  "caliber": "Caliber (e.g. 9mm, .45 ACP, 5.56)",
-  "price": "If purchase receipt: purchase price as number string (e.g. 649.99). If FFL receipt: the FFL/transfer fee amount (e.g. 25.00). Never mix these up.",
-  "date": "If purchase receipt: purchase date YYYY-MM-DD. If FFL receipt: the pickup/transfer date YYYY-MM-DD.",
-  "fflDealerName": "FFL dealer/store name if visible (for FFL receipts)",
-  "rawText": "A brief excerpt of the most relevant text from the receipt (50 words max)"
+  "firearms": [
+    {
+      "name": "Full manufacturer model name only — no store codes",
+      "manufacturer": "Brand name (e.g. Glock, Colt, Beretta)",
+      "serial": "Serial number exactly as printed — NEVER guess",
+      "upc": "12+ digit UPC/barcode if visible",
+      "mpn": "Manufacturer part/model number — NOT store inventory codes like G-I-####",
+      "caliber": "e.g. 9mm, .45 ACP, 5.56",
+      "price": "Purchase price (if purchase receipt) or FFL fee (if FFL receipt)",
+      "date": "YYYY-MM-DD"
+    }
+  ],
+  "fflDealerName": "FFL dealer name if visible",
+  "rawText": "Most relevant 50 words from the receipt"
 }
 
-If a field is not visible or unclear, use empty string "". Focus especially on serial number, manufacturer, model name — these are critical for inventory. NEVER guess or fabricate a serial number.`;
+If only one firearm, still use the firearms array with one item. Use "" for any field not visible. NEVER fabricate serial numbers.`;
 
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
       headers: {
-        "Content-Type": "application/json",
-        "x-api-key": anthropicKey,
-        "anthropic-version": "2023-06-01",
-        "anthropic-dangerous-direct-browser-access": "true"
+        'Content-Type': 'application/json',
+        'x-api-key': anthropicKey,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true'
       },
       body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 1000,
-        messages: [{
-          role: "user",
-          content: [
-            {
-              type: "image",
-              source: { type: "base64", media_type: detectMediaType(_riImageBase64), data: _riImageBase64 }
-            },
-            { type: "text", text: prompt }
-          ]
-        }]
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 1500,
+        messages: [{ role: 'user', content: [
+          { type: 'image', source: { type: 'base64', media_type: detectMediaType(_riImageBase64), data: _riImageBase64 } },
+          { type: 'text', text: prompt }
+        ]}]
       })
     });
 
     const responseData = await response.json();
     if (responseData.error) {
-      // If auth error, clear the bad key and let user re-enter
       if (responseData.error.type === 'authentication_error') {
-        localStorage.removeItem("armory_anthropic_key");
-        throw new Error("Invalid API key — please re-enter your Anthropic key");
+        localStorage.removeItem('armory_anthropic_key');
+        throw new Error('Invalid API key — please re-enter your Anthropic key');
       }
       throw new Error(responseData.error.message || 'API error');
     }
-    const text = responseData.content?.map(b => b.text || '').join('') || '';
 
+    const text = (responseData.content || []).map(b => b.text || '').join('');
     let parsed = {};
     try {
       const clean = text.replace(/```json|```/g, '').trim();
-      const start = clean.indexOf('{');
-      const end = clean.lastIndexOf('}');
-      if (start !== -1 && end > start) {
-        parsed = JSON.parse(clean.substring(start, end + 1));
-      }
-    } catch(e) {
-      console.error('Receipt parse error:', e, text);
+      const s = clean.indexOf('{'), e = clean.lastIndexOf('}');
+      if (s !== -1 && e > s) parsed = JSON.parse(clean.substring(s, e + 1));
+    } catch(err) { console.error('Receipt parse error:', err, text); }
+
+    // Normalize: support both single-object (old) and firearms array (new)
+    if (!parsed.firearms || !parsed.firearms.length) {
+      parsed.firearms = [{ name: parsed.name||'', manufacturer: parsed.manufacturer||'', serial: parsed.serial||'', upc: parsed.upc||'', mpn: parsed.mpn||'', caliber: parsed.caliber||'', price: parsed.price||'', date: parsed.date||'' }];
     }
 
-    _riExtracted = parsed;
+    _riFirearms = parsed.firearms.map(f => ({ ...f, receiptType: parsed.receiptType === 'ffl' ? 'ffl' : 'purchase', fflDealerName: parsed.fflDealerName || '' }));
+    _riCurrentIndex = 0;
 
-    // Populate common fields
-    document.getElementById('riName').value = parsed.name || '';
-    document.getElementById('riManufacturer').value = parsed.manufacturer || '';
-    document.getElementById('riSerial').value = parsed.serial || '';
-    document.getElementById('riUPC').value = parsed.upc || '';
-    document.getElementById('riMPN').value = parsed.mpn || '';
-    document.getElementById('riCaliber').value = parsed.caliber || '';
-
-    // Apply receipt type UI
-    riApplyReceiptType(parsed.receiptType === 'ffl' ? 'ffl' : 'purchase', parsed);
-
-    // Highlight non-empty fields
-    ['riName','riManufacturer','riSerial','riUPC','riMPN','riCaliber','riPrice','riDate','riFflFee','riPickupDate'].forEach(id => {
-      const el = document.getElementById(id);
-      if (el && el.value) el.classList.add('ri-highlight');
-      else if (el) el.classList.remove('ri-highlight');
-    });
-
-    // Show raw text in step 3
+    // Show raw text
     const raw3 = document.getElementById('riRawText3');
-    if (parsed.rawText) {
-      raw3.textContent = parsed.rawText;
-      raw3.style.display = 'block';
-    } else {
-      raw3.style.display = 'none';
-    }
+    if (parsed.rawText) { raw3.textContent = parsed.rawText; raw3.style.display = 'block'; }
+    else raw3.style.display = 'none';
 
-    riGoStep(3);
+    riLoadCurrentFirearm();
 
   } catch(err) {
     statusEl.innerHTML = `<span style="color:var(--red);">⚠ Error: ${err.message}</span>`;
     console.error('Receipt scan error:', err);
+  }
+}
+
+function riLoadCurrentFirearm() {
+  const f = _riFirearms[_riCurrentIndex];
+  const total = _riFirearms.length;
+
+  // Update counter label
+  const counterEl = document.getElementById('riFirearmCounter');
+  if (counterEl) counterEl.textContent = total > 1 ? `Firearm ${_riCurrentIndex + 1} of ${total}` : '';
+
+  document.getElementById('riName').value = f.name || '';
+  document.getElementById('riManufacturer').value = f.manufacturer || '';
+  document.getElementById('riSerial').value = f.serial || '';
+  document.getElementById('riUPC').value = f.upc || '';
+  document.getElementById('riMPN').value = f.mpn || '';
+  document.getElementById('riCaliber').value = f.caliber || '';
+
+  riApplyReceiptType(f.receiptType || 'purchase', f);
+
+  ['riName','riManufacturer','riSerial','riUPC','riMPN','riCaliber','riPrice','riDate','riFflFee','riPickupDate'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) { el.classList.toggle('ri-highlight', !!el.value); }
+  });
+
+  // UPC lookup status
+  const upcStatus = document.getElementById('riUpcLookupStatus');
+  if (upcStatus) upcStatus.textContent = '';
+
+  // Auto-run UPC lookup if UPC/MPN missing but we have serial/model/caliber
+  if (!f.upc && !f.mpn && (f.name || f.serial || f.caliber)) {
+    riLookupUPC();
+  }
+
+  riGoStep(3);
+}
+
+// ─── UPC / MPN Lookup via Gemini ──────────────────────────────
+async function riLookupUPC() {
+  const geminiKey = localStorage.getItem('armory_gemini_key') || '';
+  if (!geminiKey) return; // silently skip if no Gemini key
+
+  const name = document.getElementById('riName').value.trim();
+  const mfr = document.getElementById('riManufacturer').value.trim();
+  const serial = document.getElementById('riSerial').value.trim();
+  const caliber = document.getElementById('riCaliber').value.trim();
+  const currentUPC = document.getElementById('riUPC').value.trim();
+  const currentMPN = document.getElementById('riMPN').value.trim();
+
+  if (!name && !mfr) return;
+
+  const upcStatus = document.getElementById('riUpcLookupStatus');
+  if (upcStatus) upcStatus.innerHTML = '<span class="ri-spinner"></span> Looking up UPC/MPN…';
+
+  try {
+    const query = `Firearm: ${[mfr, name, caliber].filter(Boolean).join(' ')}${serial ? ' serial ' + serial : ''}`;
+    const prompt = `You are a firearm product database expert. Given this firearm: "${query}"
+
+Find the official UPC barcode and manufacturer part number (MPN).
+Return ONLY a raw JSON object, no markdown:
+{
+  "upc": "12-digit UPC number or empty string if unknown",
+  "mpn": "Manufacturer part number / model number (e.g. PA195S102, 764503032440) or empty string",
+  "confidence": "high / medium / low",
+  "note": "brief note if multiple variants exist"
+}
+
+Only return a UPC/MPN if you are confident it is correct for this specific model/variant. Use "" if unsure.`;
+
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+    });
+    const data = await res.json();
+    const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    const clean = raw.replace(/```json|```/g, '').trim();
+    const s = clean.indexOf('{'), e = clean.lastIndexOf('}');
+    let result = {};
+    if (s !== -1 && e > s) result = JSON.parse(clean.substring(s, e + 1));
+
+    if (result.upc && !currentUPC) {
+      document.getElementById('riUPC').value = result.upc;
+      document.getElementById('riUPC').classList.add('ri-highlight');
+    }
+    if (result.mpn && !currentMPN) {
+      document.getElementById('riMPN').value = result.mpn;
+      document.getElementById('riMPN').classList.add('ri-highlight');
+    }
+
+    if (upcStatus) {
+      if (result.upc || result.mpn) {
+        upcStatus.innerHTML = `<span style="color:var(--green);">✓ UPC/MPN found (${result.confidence} confidence)${result.note ? ' — ' + result.note : ''}</span>`;
+      } else {
+        upcStatus.innerHTML = `<span style="color:var(--muted);">UPC/MPN not found — enter manually</span>`;
+      }
+    }
+  } catch(err) {
+    if (upcStatus) upcStatus.innerHTML = '<span style="color:var(--muted);">UPC lookup failed — enter manually</span>';
+    console.warn('UPC lookup error:', err);
   }
 }
 
@@ -4456,88 +4536,71 @@ let _riCurrentReceiptType = 'purchase';
 function riApplyReceiptType(type, parsed) {
   _riCurrentReceiptType = type;
   const isFFL = type === 'ffl';
-
-  // Update type pill
   const pill = document.getElementById('riTypePill');
   const toggleBtn = document.getElementById('riToggleTypeBtn');
   if (isFFL) {
-    pill.style.background = 'rgba(245,158,11,0.12)';
-    pill.style.color = '#f59e0b';
-    pill.style.borderColor = 'rgba(245,158,11,0.3)';
+    pill.style.background = 'rgba(245,158,11,0.12)'; pill.style.color = '#f59e0b'; pill.style.borderColor = 'rgba(245,158,11,0.3)';
     pill.textContent = '🔄 FFL Transfer Receipt — fee shown, NOT purchase price';
     toggleBtn.textContent = 'Switch to Purchase Receipt';
   } else {
-    pill.style.background = 'rgba(22,163,74,0.1)';
-    pill.style.color = '#16a34a';
-    pill.style.borderColor = 'rgba(22,163,74,0.3)';
+    pill.style.background = 'rgba(22,163,74,0.1)'; pill.style.color = '#16a34a'; pill.style.borderColor = 'rgba(22,163,74,0.3)';
     pill.textContent = '🛒 Purchase Receipt — price is actual purchase price';
     toggleBtn.textContent = 'Switch to FFL Transfer Receipt';
   }
   toggleBtn.style.display = 'inline-flex';
-
-  // Show/hide appropriate fields
   document.querySelectorAll('.ri-purchase-fields').forEach(el => el.style.display = isFFL ? 'none' : '');
   document.querySelectorAll('.ri-ffl-fields').forEach(el => el.style.display = isFFL ? '' : 'none');
-
-  // Populate the right fields from parsed data
   if (isFFL) {
     document.getElementById('riFflFee').value = parsed.price || '';
     document.getElementById('riPickupDate').value = parsed.date || '';
     document.getElementById('riActualPrice').value = '';
     document.getElementById('riActualDate').value = '';
-    // Clear purchase fields
     document.getElementById('riPrice').value = '';
     document.getElementById('riDate').value = '';
   } else {
     document.getElementById('riPrice').value = parsed.price || '';
     document.getElementById('riDate').value = parsed.date || '';
-    // Clear FFL fields
     document.getElementById('riFflFee').value = '';
     document.getElementById('riPickupDate').value = '';
   }
 }
 
 function riToggleReceiptType() {
-  // Build a fake parsed object from current extracted data to preserve values
   const fakeParsed = {
-    price: _riCurrentReceiptType === 'ffl'
-      ? document.getElementById('riActualPrice').value
-      : document.getElementById('riFflFee').value || document.getElementById('riPrice').value,
-    date: _riCurrentReceiptType === 'ffl'
-      ? document.getElementById('riActualDate').value
-      : document.getElementById('riPickupDate').value || document.getElementById('riDate').value,
+    price: _riCurrentReceiptType === 'ffl' ? document.getElementById('riActualPrice').value : document.getElementById('riFflFee').value || document.getElementById('riPrice').value,
+    date: _riCurrentReceiptType === 'ffl' ? document.getElementById('riActualDate').value : document.getElementById('riPickupDate').value || document.getElementById('riDate').value,
   };
-  const newType = _riCurrentReceiptType === 'ffl' ? 'purchase' : 'ffl';
-  riApplyReceiptType(newType, fakeParsed);
+  riApplyReceiptType(_riCurrentReceiptType === 'ffl' ? 'purchase' : 'ffl', fakeParsed);
 }
 
-function riGoMatchStep() {
-  // Gather current field values (user may have corrected them)
-  _riExtracted.name = document.getElementById('riName').value.trim();
-  _riExtracted.manufacturer = document.getElementById('riManufacturer').value.trim();
-  _riExtracted.serial = document.getElementById('riSerial').value.trim();
-  _riExtracted.upc = document.getElementById('riUPC').value.trim();
-  _riExtracted.mpn = document.getElementById('riMPN').value.trim();
-  _riExtracted.caliber = document.getElementById('riCaliber').value.trim();
-  _riExtracted.receiptType = _riCurrentReceiptType;
-
+function riGatherCurrentFields() {
+  _riExtracted = {
+    name: document.getElementById('riName').value.trim(),
+    manufacturer: document.getElementById('riManufacturer').value.trim(),
+    serial: document.getElementById('riSerial').value.trim(),
+    upc: document.getElementById('riUPC').value.trim(),
+    mpn: document.getElementById('riMPN').value.trim(),
+    caliber: document.getElementById('riCaliber').value.trim(),
+    receiptType: _riCurrentReceiptType,
+  };
   if (_riCurrentReceiptType === 'ffl') {
     _riExtracted.fflFee = document.getElementById('riFflFee').value.trim();
     _riExtracted.pickupDate = document.getElementById('riPickupDate').value.trim();
-    _riExtracted.price = document.getElementById('riActualPrice').value.trim(); // may be blank
-    _riExtracted.date = document.getElementById('riActualDate').value.trim();    // may be blank
+    _riExtracted.price = document.getElementById('riActualPrice').value.trim();
+    _riExtracted.date = document.getElementById('riActualDate').value.trim();
   } else {
     _riExtracted.price = document.getElementById('riPrice').value.trim();
     _riExtracted.date = document.getElementById('riDate').value.trim();
     _riExtracted.fflFee = '';
     _riExtracted.pickupDate = '';
   }
+}
 
-  // Build candidate list from tracker data
+function riGoMatchStep() {
+  riGatherCurrentFields();
   const query = (_riExtracted.name + ' ' + _riExtracted.manufacturer).toLowerCase();
   const scored = (typeof data !== 'undefined' ? data : []).map(entry => {
     const entryText = (entry.name + ' ' + (entry.manufacturer || '')).toLowerCase();
-    // Simple scoring: word overlap
     const queryWords = query.split(/\s+/).filter(w => w.length > 2);
     let hits = 0;
     queryWords.forEach(w => { if (entryText.includes(w)) hits++; });
@@ -4547,20 +4610,21 @@ function riGoMatchStep() {
 
   const listEl = document.getElementById('riMatchList');
   listEl.innerHTML = '';
-  _riSelectedMatchId = null;
+  _riSelectedMatchId = undefined;
   document.getElementById('riConfirmMatchBtn').disabled = true;
 
+  // Show which firearm we're matching
+  const total = _riFirearms.length;
+  const counterLabel = document.getElementById('riMatchCounter');
+  if (counterLabel) counterLabel.textContent = total > 1 ? `Matching firearm ${_riCurrentIndex + 1} of ${total}: ${_riExtracted.name || 'Unknown'}` : '';
+
   if (scored.length === 0) {
-    listEl.innerHTML = '<div class="ri-no-match">No close matches found in tracker. You can import as a new entry.</div>';
+    listEl.innerHTML = '<div class="ri-no-match">No close matches found. You can add as a new entry.</div>';
   } else {
     scored.forEach(({ entry, score }) => {
       const card = document.createElement('div');
       card.className = 'ri-match-card';
-      card.innerHTML = `
-        <div class="ri-match-score">${score}% match</div>
-        <div class="ri-match-name">${entry.name}</div>
-        <div class="ri-match-meta">${entry.manufacturer || ''} · ${entry.status || ''} · ${entry.location || 'No location'}</div>
-      `;
+      card.innerHTML = `<div class="ri-match-score">${score}% match</div><div class="ri-match-name">${entry.name}</div><div class="ri-match-meta">${entry.manufacturer || ''} · ${entry.status || ''} · ${entry.location || 'No location'}</div>`;
       card.addEventListener('click', () => {
         document.querySelectorAll('.ri-match-card').forEach(c => c.classList.remove('selected'));
         card.classList.add('selected');
@@ -4571,14 +4635,10 @@ function riGoMatchStep() {
     });
   }
 
-  // Always offer "Add as New Entry"
   const newCard = document.createElement('div');
   newCard.className = 'ri-match-card';
   newCard.style.borderStyle = 'dashed';
-  newCard.innerHTML = `
-    <div class="ri-match-name">➕ Add as New Entry</div>
-    <div class="ri-match-meta">Create a brand-new entry in your tracker</div>
-  `;
+  newCard.innerHTML = `<div class="ri-match-name">➕ Add as New Entry</div><div class="ri-match-meta">Create a brand-new entry in your tracker</div>`;
   newCard.addEventListener('click', () => {
     document.querySelectorAll('.ri-match-card').forEach(c => c.classList.remove('selected'));
     newCard.classList.add('selected');
@@ -4586,21 +4646,17 @@ function riGoMatchStep() {
     document.getElementById('riConfirmMatchBtn').disabled = false;
   });
   listEl.appendChild(newCard);
-
   riGoStep(4);
 }
 
 function riConfirmMatch() {
   const ex = _riExtracted;
   const isFFL = ex.receiptType === 'ffl';
-
-  // Build the audit note
   const auditNote = isFFL
     ? `Updated via FFL Transfer Receipt Import (serial, UPC, MPN${ex.fflFee ? ', FFL fee: $' + ex.fflFee : ''}${ex.pickupDate ? ', pickup: ' + ex.pickupDate : ''})`
     : 'Updated via Purchase Receipt Import (serial, UPC, MPN, price, date)';
 
   if (_riSelectedMatchId === null) {
-    // New entry
     const newEntry = {
       id: Date.now().toString(),
       name: ex.name || 'Unknown Firearm',
@@ -4609,39 +4665,21 @@ function riConfirmMatch() {
       upc: ex.upc || '',
       mpn: ex.mpn || '',
       caliber: ex.caliber || '',
-      purchasePrice: ex.price || '',    // blank for FFL unless user filled actual price
-      purchaseDate: ex.date || '',      // blank for FFL unless user filled actual date
+      purchasePrice: ex.price || '',
+      purchaseDate: ex.date || '',
       fflFee: ex.fflFee || '',
       fflPickupDate: ex.pickupDate || '',
-      status: 'owned',
-      location: '',
-      needPic: true,
+      status: 'owned', location: '', needPic: true,
       notes: isFFL
         ? `Imported from FFL transfer receipt${ex.fflFee ? '. FFL fee: $' + ex.fflFee : ''}${ex.pickupDate ? '. Picked up: ' + ex.pickupDate : ''}. Purchase price/date may need to be entered manually.`
         : 'Imported from purchase receipt',
-      photo: '',
-      gunType: '',
-      marketValue: '',
-      marketTrend: '',
-      marketReason: '',
-      marketConfidence: '',
-      marketUpdated: '',
-      lastCleaned: '',
-      roundCount: '',
-      maintNotes: '',
-      priceHistory: '',
+      photo: '', gunType: '', marketValue: '', marketTrend: '', marketReason: '', marketConfidence: '', marketUpdated: '', lastCleaned: '', roundCount: '', maintNotes: '', priceHistory: '',
       auditLog: [{ ts: new Date().toISOString(), note: 'Created via ' + (isFFL ? 'FFL Transfer' : 'Purchase') + ' Receipt Import' }]
     };
-    if (typeof data !== 'undefined') {
-      data.push(newEntry);
-      saveAll();
-      filtered = [...data];
-      renderTable();
-    }
+    if (typeof data !== 'undefined') { data.push(newEntry); saveAll(); filtered = [...data]; renderTable(); }
     document.getElementById('riDoneMsg').textContent = '✅ New Entry Added!';
-    document.getElementById('riDoneSub').textContent = `"${newEntry.name}" added.${isFFL && !ex.price ? ' Remember to add actual purchase price manually.' : ''}`;
+    document.getElementById('riDoneSub').textContent = `"${newEntry.name}" added.${isFFL && !ex.price ? ' Add actual purchase price manually.' : ''}`;
   } else {
-    // Update existing entry
     const idx = (typeof data !== 'undefined' ? data : []).findIndex(d => d.id === _riSelectedMatchId);
     if (idx >= 0) {
       if (ex.serial && !data[idx].serial) data[idx].serial = ex.serial;
@@ -4649,24 +4687,31 @@ function riConfirmMatch() {
       if (ex.mpn && !data[idx].mpn) data[idx].mpn = ex.mpn;
       if (ex.caliber && !data[idx].caliber) data[idx].caliber = ex.caliber;
       if (ex.manufacturer && !data[idx].manufacturer) data[idx].manufacturer = ex.manufacturer;
-      // Only update purchase price/date if this is a purchase receipt OR user filled in actual price
       if (ex.price && !data[idx].purchasePrice) data[idx].purchasePrice = ex.price;
       if (ex.date && !data[idx].purchaseDate) data[idx].purchaseDate = ex.date;
-      // Always store FFL-specific fields if present
       if (ex.fflFee) data[idx].fflFee = ex.fflFee;
       if (ex.pickupDate) data[idx].fflPickupDate = ex.pickupDate;
       if (!data[idx].auditLog) data[idx].auditLog = [];
       data[idx].auditLog.push({ ts: new Date().toISOString(), note: auditNote });
-      saveAll();
-      filtered = [...data];
-      renderTable();
+      saveAll(); filtered = [...data]; renderTable();
       document.getElementById('riDoneMsg').textContent = '✅ Entry Updated!';
-      document.getElementById('riDoneSub').textContent = `"${data[idx].name}" updated with receipt data.${isFFL && !ex.price ? ' Purchase price not on FFL receipt — add manually if needed.' : ''}`;
+      document.getElementById('riDoneSub').textContent = `"${data[idx].name}" updated.${isFFL && !ex.price ? ' Purchase price not on FFL receipt — add manually if needed.' : ''}`;
     }
   }
 
   if (typeof showToast === 'function') showToast('📄 Receipt imported successfully ✓');
-  riGoStep(5);
+
+  // If more firearms on this receipt, load the next one
+  _riCurrentIndex++;
+  if (_riCurrentIndex < _riFirearms.length) {
+    const remaining = _riFirearms.length - _riCurrentIndex;
+    document.getElementById('riDoneSub').textContent += ` — ${remaining} more firearm${remaining > 1 ? 's' : ''} on this receipt.`;
+    setTimeout(() => {
+      riLoadCurrentFirearm();
+    }, 1800);
+  } else {
+    riGoStep(5);
+  }
 }
 </script>
 </body>

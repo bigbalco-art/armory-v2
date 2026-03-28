@@ -4,7 +4,6 @@ const ASSETS = [
   '/armory-v2/index.html',
   '/armory-v2/manifest.json'
 ];
-
 // Pre-cache app shell on install
 self.addEventListener('install', e => {
   e.waitUntil(
@@ -12,7 +11,6 @@ self.addEventListener('install', e => {
   );
   self.skipWaiting();
 });
-
 // Clean up old caches
 self.addEventListener('activate', e => {
   e.waitUntil(
@@ -22,13 +20,13 @@ self.addEventListener('activate', e => {
   );
   self.clients.claim();
 });
-
 // Network first, fall back to cache
 self.addEventListener('fetch', e => {
-  // Don't cache Firebase or API calls
-  if(e.request.url.includes('firebase') ||
-     e.request.url.includes('googleapis') ||
-     e.request.url.includes('generativelanguage')) {
+  // Don't intercept any external API calls
+  if (e.request.url.includes('firebase') ||
+      e.request.url.includes('googleapis') ||
+      e.request.url.includes('generativelanguage') ||
+      e.request.url.includes('api.anthropic.com')) {
     return;
   }
   e.respondWith(
