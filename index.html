@@ -4048,47 +4048,81 @@ if('serviceWorker' in navigator) {
      FFL RECEIPT IMPORT MODAL
 ════════════════════════════════════════════════════════════ -->
 <style>
-  #receiptImportOverlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:5000; align-items:center; justify-content:center; backdrop-filter:blur(3px); }
+  #receiptImportOverlay {
+    display:none; position:fixed; inset:0; background:rgba(0,0,0,0.55);
+    z-index:5000; align-items:center; justify-content:center;
+    backdrop-filter:blur(3px);
+  }
   #receiptImportOverlay.open { display:flex; }
   #receiptImportBox {
     background:var(--surface); border:1px solid var(--border); border-top:4px solid #7c3aed;
     border-radius:14px; padding:28px 30px; width:100%; max-width:680px; max-height:92vh;
-    overflow-y:auto; box-shadow:0 12px 40px rgba(0,0,0,0.2); position:relative;
+    overflow-y:auto; box-shadow:0 12px 40px rgba(0,0,0,0.22); position:relative;
+    /* Prevent layout shift / flicker between steps */
+    contain:layout;
   }
   #receiptImportBox h2 { font-size:18px; font-weight:700; color:#7c3aed; letter-spacing:1px; margin-bottom:4px; }
   #receiptImportBox .ri-sub { font-size:12px; color:var(--muted); margin-bottom:18px; }
+
+  /* Steps: use opacity + pointer-events instead of display:none to prevent reflow flicker */
   .ri-step { display:none; }
-  .ri-step.active { display:block; }
+  .ri-step.active { display:block; animation:riFadeIn 0.18s ease; }
+  @keyframes riFadeIn { from { opacity:0; transform:translateY(4px); } to { opacity:1; transform:translateY(0); } }
+
+  /* Scanning step: lock min-height so box doesn't jump when image loads */
+  #riStep2 { min-height:220px; display:none; flex-direction:column; align-items:center; justify-content:center; gap:12px; }
+  #riStep2.active { display:flex; }
+
   .ri-upload-zone {
     border:2px dashed #7c3aed; border-radius:10px; padding:40px 20px; text-align:center;
     cursor:pointer; transition:background 0.2s; background:rgba(124,58,237,0.03);
   }
-  .ri-upload-zone:hover { background:rgba(124,58,237,0.07); }
+  .ri-upload-zone:hover { background:rgba(124,58,237,0.08); }
   .ri-upload-zone .ri-icon { font-size:40px; margin-bottom:10px; }
   .ri-upload-zone p { font-size:13px; color:var(--muted); }
-  .ri-preview-img { max-width:100%; max-height:240px; border-radius:8px; border:1px solid var(--border); display:block; margin:0 auto 16px; }
+
+  /* Preview image: fixed height so scanning screen is stable */
+  .ri-preview-img {
+    width:100%; max-width:340px; height:180px; object-fit:cover;
+    border-radius:8px; border:1px solid var(--border); display:block; margin:0 auto;
+    background:var(--bg);
+  }
+
   .ri-extracted-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin:16px 0; }
   .ri-field { display:flex; flex-direction:column; gap:4px; }
   .ri-field label { font-size:10px; text-transform:uppercase; letter-spacing:1px; color:var(--muted); font-family:'JetBrains Mono',monospace; }
   .ri-field input { background:var(--bg); border:1px solid var(--border); color:var(--text); padding:8px 10px; border-radius:6px; font-size:13px; outline:none; width:100%; transition:border-color 0.2s; }
   .ri-field input:focus { border-color:#7c3aed; }
   .ri-field input.ri-highlight { border-color:#7c3aed; background:rgba(124,58,237,0.05); }
+  .ri-field input.ri-conf-low { border-color:#f59e0b; background:rgba(245,158,11,0.06); }
+  .ri-field input.ri-conf-low::after { content:'?'; }
+
+  /* Match cards — fixed right padding so score badge never overlaps text */
   .ri-match-card {
-    background:var(--bg); border:2px solid var(--border); border-radius:10px; padding:14px 16px;
-    cursor:pointer; transition:all 0.15s; position:relative;
+    background:var(--bg); border:2px solid var(--border); border-radius:10px;
+    padding:12px 14px 12px 14px; cursor:pointer; transition:all 0.15s; position:relative;
+    padding-right:72px; /* always clear space for score badge */
   }
-  .ri-match-card:hover, .ri-match-card.selected { border-color:#7c3aed; background:rgba(124,58,237,0.05); }
-  .ri-match-card .ri-match-name { font-weight:600; font-size:14px; color:var(--text); }
-  .ri-match-card .ri-match-meta { font-size:11px; color:var(--muted); margin-top:3px; }
-  .ri-match-card .ri-match-score { position:absolute; top:10px; right:12px; font-size:11px; font-family:'JetBrains Mono',monospace; color:#7c3aed; font-weight:600; }
+  .ri-match-card:hover { border-color:#a78bfa; background:rgba(124,58,237,0.04); }
+  .ri-match-card.selected { border-color:#7c3aed; background:rgba(124,58,237,0.07); box-shadow:0 0 0 3px rgba(124,58,237,0.15); }
+  .ri-match-card .ri-match-name { font-weight:600; font-size:13px; color:var(--text); line-height:1.3; word-break:break-word; }
+  .ri-match-card .ri-match-meta { font-size:11px; color:var(--muted); margin-top:4px; line-height:1.4; }
+  /* Score badge — pill style, stays right, never overlaps */
+  .ri-match-card .ri-match-score {
+    position:absolute; top:10px; right:10px;
+    font-size:10px; font-family:'JetBrains Mono',monospace; font-weight:700;
+    color:#7c3aed; background:rgba(124,58,237,0.1); border:1px solid rgba(124,58,237,0.25);
+    border-radius:20px; padding:2px 7px; white-space:nowrap; line-height:1.6;
+  }
+
   .ri-no-match { background:var(--bg); border:1px dashed var(--border); border-radius:8px; padding:14px; font-size:13px; color:var(--muted); text-align:center; }
-  .ri-actions { display:flex; gap:8px; margin-top:20px; justify-content:flex-end; flex-wrap:wrap; }
-  .ri-spinner { display:inline-block; width:18px; height:18px; border:3px solid #e5e7eb; border-top-color:#7c3aed; border-radius:50%; animation:spin 0.7s linear infinite; vertical-align:middle; margin-right:6px; }
-  .ri-status { font-size:13px; color:var(--muted); margin:10px 0; min-height:20px; }
+  .ri-actions { display:flex; gap:8px; margin-top:20px; justify-content:flex-end; flex-wrap:wrap; align-items:center; }
+  .ri-spinner { display:inline-block; width:16px; height:16px; border:2.5px solid rgba(124,58,237,0.2); border-top-color:#7c3aed; border-radius:50%; animation:spin 0.65s linear infinite; vertical-align:middle; margin-right:6px; flex-shrink:0; }
+  .ri-status { font-size:13px; color:var(--muted); margin:8px 0 4px; min-height:22px; text-align:center; }
   .ri-raw-box { background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:10px; font-size:11px; font-family:'JetBrains Mono',monospace; color:var(--muted); max-height:80px; overflow-y:auto; margin-top:8px; white-space:pre-wrap; word-break:break-all; }
-  .btn-purple { background:#7c3aed; color:#fff; border:none; padding:8px 16px; border-radius:6px; font-size:13px; font-weight:500; cursor:pointer; display:flex; align-items:center; gap:6px; transition:background 0.15s; }
+  .btn-purple { background:#7c3aed; color:#fff; border:none; padding:8px 16px; border-radius:6px; font-size:13px; font-weight:500; cursor:pointer; display:inline-flex; align-items:center; gap:6px; transition:background 0.15s; }
   .btn-purple:hover { background:#6d28d9; }
-  .btn-purple:disabled { opacity:0.5; cursor:not-allowed; }
+  .btn-purple:disabled { opacity:0.45; cursor:not-allowed; }
 </style>
 
 <div id="receiptImportOverlay">
@@ -4119,9 +4153,10 @@ if('serviceWorker' in navigator) {
 
     <!-- STEP 2: Scanning -->
     <div class="ri-step" id="riStep2">
-      <img id="riPreviewImg" class="ri-preview-img" src="" alt="Receipt preview">
-      <div class="ri-status" id="riScanStatus"><span class="ri-spinner"></span>Scanning receipt with Claude Vision…</div>
-      <div class="ri-raw-box" id="riRawText" style="display:none;"></div>
+      <img id="riPreviewImg" class="ri-preview-img" src="" alt="Receipt preview" style="flex-shrink:0;">
+      <div class="ri-status" id="riScanStatus" style="text-align:center;"><span class="ri-spinner"></span>Analyzing receipt with Claude Vision…</div>
+      <div style="font-size:11px;color:var(--muted);text-align:center;">This may take 5–10 seconds</div>
+      <div class="ri-raw-box" id="riRawText" style="display:none;width:100%;"></div>
     </div>
 
     <!-- STEP 3: Review extracted data -->
@@ -4196,7 +4231,7 @@ if('serviceWorker' in navigator) {
       <div class="ri-raw-box" id="riRawText3"></div>
       <div class="ri-actions">
         <button class="btn btn-ghost" onclick="closeReceiptImport()">Cancel</button>
-        <button class="btn btn-ghost" onclick="riGoStep(1)">← Rescan</button>
+        <button class="btn btn-ghost" onclick="riRescan()">↺ Rescan</button>
         <button class="btn-purple" onclick="riGoMatchStep()">Find Match in Tracker →</button>
       </div>
     </div>
@@ -4205,8 +4240,13 @@ if('serviceWorker' in navigator) {
     <div class="ri-step" id="riStep4">
       <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:4px;text-transform:uppercase;letter-spacing:0.5px;">Select Matching Entry in Your Tracker</div>
       <div id="riMatchCounter" style="font-size:11px;color:#7c3aed;font-weight:600;margin-bottom:8px;"></div>
-      <div style="font-size:12px;color:var(--muted);margin-bottom:14px;">Claude found these likely matches based on the firearm name. Select the correct one, or choose "New Entry" to add as new.</div>
-      <div id="riMatchList" style="display:flex;flex-direction:column;gap:8px;"></div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:10px;">Top matches based on firearm name — or search all 343 entries below.</div>
+      <div style="position:relative;margin-bottom:12px;">
+        <input id="riMatchSearch" type="text" placeholder="🔍  Search all entries by name, serial, UPC…"
+          oninput="riFilterMatchList(this.value)"
+          style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:7px;font-size:13px;background:var(--bg);color:var(--text);outline:none;box-sizing:border-box;">
+      </div>
+      <div id="riMatchList" style="display:flex;flex-direction:column;gap:8px;max-height:280px;overflow-y:auto;"></div>
       <div class="ri-actions" style="margin-top:16px;">
         <button class="btn btn-ghost" onclick="closeReceiptImport()">Cancel</button>
         <button class="btn btn-ghost" onclick="riGoStep(3)">← Back</button>
@@ -4232,16 +4272,70 @@ if('serviceWorker' in navigator) {
 <script>
 // ─── FFL Receipt Import ────────────────────────────────────────
 let _riImageBase64 = null;
-let _riFirearms = [];       // all firearms found on the receipt
-let _riCurrentIndex = 0;   // which one we're reviewing now
-let _riExtracted = {};      // current firearm being reviewed
-let _riSelectedMatchId = undefined;
+let _riExtracted = {};
+let _riSelectedMatchId = null; // null = new entry
+
+function openReceiptImport() {
+  riGoStep(1);
+  _riImageBase64 = null;
+  _riExtracted = {};
+  _riSelectedMatchId = undefined;
+  document.getElementById('receiptImportOverlay').classList.add('open');
+}
+
+function closeReceiptImport() {
+  document.getElementById('receiptImportOverlay').classList.remove('open');
+}
+
+function riGoStep(n) {
+  document.querySelectorAll('.ri-step').forEach(s => s.classList.remove('active'));
+  document.getElementById('riStep' + n).classList.add('active');
+  const box = document.getElementById('receiptImportBox');
+  if (box) box.scrollTop = 0;
+}
+
+async function riHandleFile(input) {
+  const file = input.files[0];
+  if (!file) return;
+  input.value = '';
+
+  // Compress large images before sending — phone photos can be 5–10MB
+  const compressed = await riCompressImage(file, 1600, 0.82);
+  _riImageBase64 = compressed.split(',')[1];
+  document.getElementById('riPreviewImg').src = compressed;
+  document.getElementById('riPreviewImg3').src = compressed;
+  riGoStep(2);
+
+  const key = getAnthropicKey();
+  if (!key) { showAnthropicKeySetup(() => riScanReceipt()); return; }
+  await riScanReceipt();
+}
+
+function riCompressImage(file, maxDim, quality) {
+  return new Promise(resolve => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      let { width, height } = img;
+      if (width > maxDim || height > maxDim) {
+        if (width > height) { height = Math.round(height * maxDim / width); width = maxDim; }
+        else { width = Math.round(width * maxDim / height); height = maxDim; }
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = width; canvas.height = height;
+      canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+      resolve(canvas.toDataURL('image/jpeg', quality));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); const r = new FileReader(); r.onload = e => resolve(e.target.result); r.readAsDataURL(file); };
+    img.src = url;
+  });
+}
 
 // ─── Anthropic Key helpers ─────────────────────────────────────
 function getAnthropicKey() {
   return localStorage.getItem('armory_anthropic_key') || '';
 }
-
 function showAnthropicKeySetup(onSuccess) {
   const existing = getAnthropicKey();
   const old = document.getElementById('anthropicKeyDlg');
@@ -4256,9 +4350,7 @@ function showAnthropicKeySetup(onSuccess) {
         <div style="font-size:17px;font-weight:700;color:#7c3aed;">Receipt Scanner — API Key</div>
       </div>
       <div style="color:var(--muted);font-size:13px;margin-bottom:18px;line-height:1.6;">
-        ${existing
-          ? 'Your Anthropic key is saved on this device. Update or clear it below.'
-          : 'Receipt scanning uses Claude Vision. Enter your Anthropic API key to continue.<br><a href="https://console.anthropic.com/settings/keys" target="_blank" style="color:#7c3aed;">console.anthropic.com → API Keys</a>'}
+        ${existing ? 'Your Anthropic key is saved. Update or clear it below.' : 'Receipt scanning uses Claude Vision. Enter your Anthropic API key to continue.<br><a href="https://console.anthropic.com/settings/keys" target="_blank" style="color:#7c3aed;">console.anthropic.com → API Keys</a>'}
       </div>
       <input id="anthropicKeyInput" type="password" placeholder="Paste key (sk-ant-...)"
         style="width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;font-family:monospace;margin-bottom:16px;background:var(--bg);color:var(--text);box-sizing:border-box;"
@@ -4283,48 +4375,17 @@ function showAnthropicKeySetup(onSuccess) {
   if (clearBtn) clearBtn.onclick = () => { localStorage.removeItem('armory_anthropic_key'); dlg.remove(); showToast('Key cleared'); };
 }
 
-function openReceiptImport() {
-  riGoStep(1);
-  _riImageBase64 = null;
-  _riFirearms = [];
-  _riCurrentIndex = 0;
-  _riExtracted = {};
-  _riSelectedMatchId = undefined;
-  document.getElementById('receiptImportOverlay').classList.add('open');
-}
-
-function closeReceiptImport() {
-  document.getElementById('receiptImportOverlay').classList.remove('open');
-}
-
-function riGoStep(n) {
-  document.querySelectorAll('.ri-step').forEach(s => s.classList.remove('active'));
-  document.getElementById('riStep' + n).classList.add('active');
-}
-
-async function riHandleFile(input) {
-  const file = input.files[0];
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = async function(e) {
-    const dataUrl = e.target.result;
-    _riImageBase64 = dataUrl.split(',')[1];
-    document.getElementById('riPreviewImg').src = dataUrl;
-    document.getElementById('riPreviewImg3').src = dataUrl;
-    riGoStep(2);
-    const key = getAnthropicKey();
-    if (!key) { showAnthropicKeySetup(() => riScanReceipt()); return; }
-    await riScanReceipt();
-  };
-  reader.readAsDataURL(file);
-  input.value = '';
-}
+// ─── State ─────────────────────────────────────────────────────
+let _riFirearms = [];
+let _riCurrentIndex = 0;
+let _riExtracted = {};
+let _riCurrentReceiptType = 'purchase';
 
 function detectMediaType(b64) {
   try {
     const head = atob(b64.substring(0, 16));
     if (head.charCodeAt(0) === 0xFF && head.charCodeAt(1) === 0xD8) return 'image/jpeg';
-    if (head.startsWith('\x89PNG')) return 'image/png';
+    if (head.startsWith('PNG')) return 'image/png';
     if (head.startsWith('GIF')) return 'image/gif';
     if (head.startsWith('RIFF')) return 'image/webp';
   } catch(e) {}
@@ -4336,8 +4397,8 @@ async function riScanReceipt() {
   if (!anthropicKey) { showAnthropicKeySetup(() => riScanReceipt()); return; }
 
   const statusEl = document.getElementById('riScanStatus');
-  statusEl.innerHTML = '<span class="ri-spinner"></span>Analyzing receipt with Claude Vision…';
   document.getElementById('riRawText').style.display = 'none';
+  statusEl.innerHTML = '<span class="ri-spinner"></span>Analyzing receipt with Claude Vision…';
 
   try {
     const prompt = `You are an FFL receipt expert. This receipt may contain ONE or MULTIPLE firearms.
@@ -4347,31 +4408,34 @@ Determine receipt type:
 - "purchase": direct store purchase — shows actual firearm prices ($300–$3000+).
 
 IMPORTANT — Model name rules:
-- DO NOT include store inventory/tracking numbers like "G-I-1234", "INV-###", "ITEM-###", or any alphanumeric codes that look like internal store references.
-- The model name should be the actual manufacturer model name (e.g. "Glock 19 Gen5 MOS", "Beretta 92X Performance").
-- MPN/model number should be the manufacturer's part number, NOT the store's inventory code.
+- DO NOT include store inventory/tracking numbers like "G-I-1234", "INV-###", "ITEM-###", or any alphanumeric store codes.
+- Model name = actual manufacturer model name (e.g. "Glock 19 Gen5 MOS").
+- MPN = manufacturer's part number only, NOT store inventory codes.
 
-Return ONLY a raw JSON object — no markdown, no backticks:
+Return ONLY raw JSON — no markdown, no backticks:
 {
   "receiptType": "ffl" or "purchase",
   "receiptTypeConfidence": "high" or "medium" or "low",
   "firearms": [
     {
-      "name": "Full manufacturer model name only — no store codes",
-      "manufacturer": "Brand name (e.g. Glock, Colt, Beretta)",
-      "serial": "Serial number exactly as printed — NEVER guess",
-      "upc": "12+ digit UPC/barcode if visible",
-      "mpn": "Manufacturer part/model number — NOT store inventory codes like G-I-####",
+      "name": "Manufacturer model name only — no store codes",
+      "manufacturer": "Brand (e.g. Glock, Colt, Beretta)",
+      "serial": "Exact serial as printed — NEVER guess",
+      "upc": "12+ digit UPC if visible",
+      "mpn": "Manufacturer part number — NOT store inventory codes",
       "caliber": "e.g. 9mm, .45 ACP, 5.56",
-      "price": "Purchase price (if purchase receipt) or FFL fee (if FFL receipt)",
+      "price": "Purchase price or FFL fee amount",
       "date": "YYYY-MM-DD"
     }
   ],
   "fflDealerName": "FFL dealer name if visible",
-  "rawText": "Most relevant 50 words from the receipt"
+  "rawText": "Most relevant 50 words from receipt"
 }
 
-If only one firearm, still use the firearms array with one item. Use "" for any field not visible. NEVER fabricate serial numbers.`;
+Single firearm = still use the array with one item. Use "" for any field not visible. NEVER fabricate serial numbers.
+
+Also add a top-level "fieldConfidence" object rating confidence for each field across all firearms:
+"fieldConfidence": { "name":"high/medium/low", "manufacturer":"high/medium/low", "serial":"high/medium/low", "upc":"high/medium/low", "mpn":"high/medium/low", "caliber":"high/medium/low", "price":"high/medium/low" }`;
 
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -4408,7 +4472,6 @@ If only one firearm, still use the firearms array with one item. Use "" for any 
       if (s !== -1 && e > s) parsed = JSON.parse(clean.substring(s, e + 1));
     } catch(err) { console.error('Receipt parse error:', err, text); }
 
-    // Normalize: support both single-object (old) and firearms array (new)
     if (!parsed.firearms || !parsed.firearms.length) {
       parsed.firearms = [{ name: parsed.name||'', manufacturer: parsed.manufacturer||'', serial: parsed.serial||'', upc: parsed.upc||'', mpn: parsed.mpn||'', caliber: parsed.caliber||'', price: parsed.price||'', date: parsed.date||'' }];
     }
@@ -4416,7 +4479,6 @@ If only one firearm, still use the firearms array with one item. Use "" for any 
     _riFirearms = parsed.firearms.map(f => ({ ...f, receiptType: parsed.receiptType === 'ffl' ? 'ffl' : 'purchase', fflDealerName: parsed.fflDealerName || '' }));
     _riCurrentIndex = 0;
 
-    // Show raw text
     const raw3 = document.getElementById('riRawText3');
     if (parsed.rawText) { raw3.textContent = parsed.rawText; raw3.style.display = 'block'; }
     else raw3.style.display = 'none';
@@ -4432,8 +4494,6 @@ If only one firearm, still use the firearms array with one item. Use "" for any 
 function riLoadCurrentFirearm() {
   const f = _riFirearms[_riCurrentIndex];
   const total = _riFirearms.length;
-
-  // Update counter label
   const counterEl = document.getElementById('riFirearmCounter');
   if (counterEl) counterEl.textContent = total > 1 ? `Firearm ${_riCurrentIndex + 1} of ${total}` : '';
 
@@ -4443,27 +4503,29 @@ function riLoadCurrentFirearm() {
   document.getElementById('riUPC').value = f.upc || '';
   document.getElementById('riMPN').value = f.mpn || '';
   document.getElementById('riCaliber').value = f.caliber || '';
-
   riApplyReceiptType(f.receiptType || 'purchase', f);
 
+  const confMap = { riName:'name', riManufacturer:'manufacturer', riSerial:'serial', riUPC:'upc', riMPN:'mpn', riCaliber:'caliber', riPrice:'price', riFflFee:'price' };
+  const fc = f.fieldConfidence || {};
   ['riName','riManufacturer','riSerial','riUPC','riMPN','riCaliber','riPrice','riDate','riFflFee','riPickupDate'].forEach(id => {
     const el = document.getElementById(id);
-    if (el) { el.classList.toggle('ri-highlight', !!el.value); }
+    if (!el) return;
+    el.classList.remove('ri-highlight','ri-conf-low');
+    if (el.value) {
+      const conf = fc[confMap[id]];
+      if (conf === 'low' || conf === 'medium') el.classList.add('ri-conf-low');
+      else el.classList.add('ri-highlight');
+    }
   });
 
-  // UPC lookup status
   const upcStatus = document.getElementById('riUpcLookupStatus');
   if (upcStatus) upcStatus.textContent = '';
 
-  // Auto-run UPC lookup if UPC/MPN missing but we have serial/model/caliber
-  if (!f.upc && !f.mpn && (f.name || f.serial || f.caliber)) {
-    riLookupUPC();
-  }
+  if (!f.upc && !f.mpn && (f.name || f.serial || f.manufacturer)) riLookupUPC();
 
   riGoStep(3);
 }
 
-// ─── UPC / MPN Lookup via Gemini ──────────────────────────────
 async function riLookupUPC() {
   const geminiKey = localStorage.getItem('armory_gemini_key') || '';
   if (!geminiKey) return;
@@ -4474,43 +4536,36 @@ async function riLookupUPC() {
   const caliber = document.getElementById('riCaliber').value.trim();
   const currentUPC = document.getElementById('riUPC').value.trim();
   const currentMPN = document.getElementById('riMPN').value.trim();
-
   if (!name && !mfr && !serial) return;
 
   const upcStatus = document.getElementById('riUpcLookupStatus');
   if (upcStatus) upcStatus.innerHTML = '<span class="ri-spinner"></span> Looking up UPC/MPN…';
 
   try {
-    const parts = [mfr, name, caliber].filter(Boolean);
-    const query = parts.join(' ');
     const prompt = `You are a firearm product database expert specializing in UPC barcodes and manufacturer part numbers.
 
-Given this firearm information extracted from a receipt:
+Given this firearm information from a receipt:
 - Manufacturer: "${mfr || 'unknown'}"
 - Model name: "${name || 'unknown'}"
 - Caliber: "${caliber || 'unknown'}"
 - Serial number: "${serial || 'not provided'}"
 
-The serial number prefix can help narrow down the exact variant and production year — use it if helpful.
-Your goal is to find the exact UPC barcode (12 digits) and manufacturer part number (MPN/SKU) for this specific firearm.
+The serial number prefix often identifies the exact variant and production year — use it if helpful.
+Find the exact UPC barcode (12 digits) and manufacturer part number (MPN/SKU).
 
-Return ONLY a raw JSON object, no markdown, no backticks:
+Return ONLY raw JSON, no markdown:
 {
-  "upc": "12-digit UPC number, or empty string if not confidently known",
-  "mpn": "Manufacturer part number or model SKU (e.g. PA195S102, GNS1950203, BI-AXGT9-01), or empty string",
-  "modelResolved": "The exact model/variant you resolved this to (e.g. Beretta 92X Performance 9mm)",
+  "upc": "12-digit UPC or empty string if not confidently known",
+  "mpn": "Manufacturer part number (e.g. PA195S102, GNS1950203) or empty string",
+  "modelResolved": "Exact model/variant resolved (e.g. Beretta 92X Performance 9mm)",
   "confidence": "high / medium / low",
-  "note": "Brief note — e.g. if multiple UPCs exist for variants, explain which one and why"
+  "note": "Brief note if multiple variants exist or if serial helped narrow it down"
 }
 
-Only provide UPC/MPN values you are confident about. Do NOT guess. Use empty string if uncertain.`;
+Only provide values you are confident about. Use empty string if uncertain. Do NOT guess.`;
 
     const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`;
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
-    });
+    const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }) });
     const data = await res.json();
     const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
     const clean = raw.replace(/```json|```/g, '').trim();
@@ -4518,21 +4573,15 @@ Only provide UPC/MPN values you are confident about. Do NOT guess. Use empty str
     let result = {};
     if (s !== -1 && e > s) result = JSON.parse(clean.substring(s, e + 1));
 
-    if (result.upc && !currentUPC) {
-      document.getElementById('riUPC').value = result.upc;
-      document.getElementById('riUPC').classList.add('ri-highlight');
-    }
-    if (result.mpn && !currentMPN) {
-      document.getElementById('riMPN').value = result.mpn;
-      document.getElementById('riMPN').classList.add('ri-highlight');
-    }
+    if (result.upc && !currentUPC) { document.getElementById('riUPC').value = result.upc; document.getElementById('riUPC').classList.add('ri-highlight'); }
+    if (result.mpn && !currentMPN) { document.getElementById('riMPN').value = result.mpn; document.getElementById('riMPN').classList.add('ri-highlight'); }
 
     if (upcStatus) {
       if (result.upc || result.mpn) {
-        const resolvedLabel = result.modelResolved ? `<div style="color:var(--muted);margin-top:2px;">Resolved: ${result.modelResolved}</div>` : '';
+        const resolvedLabel = result.modelResolved ? `<div style="color:var(--muted);font-size:10px;margin-top:2px;">Resolved: ${result.modelResolved}</div>` : '';
         upcStatus.innerHTML = `<span style="color:var(--green);">✓ Found (${result.confidence} confidence)${result.note ? ' — ' + result.note : ''}</span>${resolvedLabel}`;
       } else {
-        upcStatus.innerHTML = `<span style="color:var(--muted);">UPC/MPN not found — enter manually or try correcting the model name</span>`;
+        upcStatus.innerHTML = `<span style="color:var(--muted);">UPC/MPN not found — enter manually or correct the model name</span>`;
       }
     }
   } catch(err) {
@@ -4540,9 +4589,6 @@ Only provide UPC/MPN values you are confident about. Do NOT guess. Use empty str
     console.warn('UPC lookup error:', err);
   }
 }
-
-// Track current receipt type for toggle
-let _riCurrentReceiptType = 'purchase';
 
 function riApplyReceiptType(type, parsed) {
   _riCurrentReceiptType = type;
@@ -4607,8 +4653,39 @@ function riGatherCurrentFields() {
   }
 }
 
+function riRescan() {
+  // Keep the image, just re-run the AI scan without going back to step 1
+  if (!_riImageBase64) { riGoStep(1); return; }
+  riGoStep(2);
+  riScanReceipt();
+}
+
 function riGoMatchStep() {
   riGatherCurrentFields();
+
+  // Auto-match on exact serial number — skip the match list entirely
+  if (_riExtracted.serial) {
+    const serialMatch = (typeof data !== 'undefined' ? data : []).find(
+      d => d.serial && d.serial.trim().toLowerCase() === _riExtracted.serial.trim().toLowerCase()
+    );
+    if (serialMatch) {
+      _riSelectedMatchId = serialMatch.id;
+      // Show a brief confirmation then import directly
+      const listEl = document.getElementById('riMatchList');
+      listEl.innerHTML = `<div class="ri-match-card selected" style="border-color:#16a34a;background:rgba(22,163,74,0.06);">
+        <div class="ri-match-score" style="color:#16a34a;background:rgba(22,163,74,0.1);border-color:rgba(22,163,74,0.3);">✓ Serial Match</div>
+        <div class="ri-match-name">${serialMatch.name}</div>
+        <div class="ri-match-meta">${[serialMatch.manufacturer, serialMatch.status, serialMatch.location||'No location'].filter(Boolean).join(' · ')}</div>
+        <div class="ri-match-serial">S/N: ${serialMatch.serial}${serialMatch.caliber?' · '+serialMatch.caliber:''}</div>
+      </div>`;
+      const counterLabel = document.getElementById('riMatchCounter');
+      if (counterLabel) counterLabel.textContent = 'Serial number matched automatically ✓';
+      document.getElementById('riConfirmMatchBtn').disabled = false;
+      riGoStep(4);
+      return;
+    }
+  }
+
   const query = (_riExtracted.name + ' ' + _riExtracted.manufacturer).toLowerCase();
   const scored = (typeof data !== 'undefined' ? data : []).map(entry => {
     const entryText = (entry.name + ' ' + (entry.manufacturer || '')).toLowerCase();
@@ -4623,11 +4700,12 @@ function riGoMatchStep() {
   listEl.innerHTML = '';
   _riSelectedMatchId = undefined;
   document.getElementById('riConfirmMatchBtn').disabled = true;
+  const srch = document.getElementById('riMatchSearch');
+  if (srch) srch.value = '';
 
-  // Show which firearm we're matching
   const total = _riFirearms.length;
   const counterLabel = document.getElementById('riMatchCounter');
-  if (counterLabel) counterLabel.textContent = total > 1 ? `Matching firearm ${_riCurrentIndex + 1} of ${total}: ${_riExtracted.name || 'Unknown'}` : '';
+  if (counterLabel) counterLabel.textContent = total > 1 ? `Matching firearm ${_riCurrentIndex + 1} of ${total}: ${_riExtracted.name || 'Unknown'}` : (_riExtracted.name || '');
 
   if (scored.length === 0) {
     listEl.innerHTML = '<div class="ri-no-match">No close matches found. You can add as a new entry.</div>';
@@ -4635,7 +4713,10 @@ function riGoMatchStep() {
     scored.forEach(({ entry, score }) => {
       const card = document.createElement('div');
       card.className = 'ri-match-card';
-      card.innerHTML = `<div class="ri-match-score">${score}% match</div><div class="ri-match-name">${entry.name}</div><div class="ri-match-meta">${entry.manufacturer || ''} · ${entry.status || ''} · ${entry.location || 'No location'}</div>`;
+      card.dataset.entryId = entry.id;
+      card.dataset.searchText = [entry.name, entry.manufacturer, entry.serial, entry.upc, entry.mpn, entry.caliber, entry.location].filter(Boolean).join(' ');
+      const serialHint = entry.serial ? `<div class="ri-match-serial">S/N: ${entry.serial}${entry.caliber?' · '+entry.caliber:''}${entry.upc?' · UPC: '+entry.upc:''}</div>` : '';
+      card.innerHTML = `<div class="ri-match-score">${score}%</div><div class="ri-match-name">${entry.name}</div><div class="ri-match-meta">${[entry.manufacturer, entry.status, entry.location||'No location'].filter(Boolean).join(' · ')}</div>${serialHint}`;
       card.addEventListener('click', () => {
         document.querySelectorAll('.ri-match-card').forEach(c => c.classList.remove('selected'));
         card.classList.add('selected');
@@ -4660,7 +4741,25 @@ function riGoMatchStep() {
   riGoStep(4);
 }
 
+function riFilterMatchList(query) {
+  const q = query.trim().toLowerCase();
+  const listEl = document.getElementById('riMatchList');
+  const cards = listEl.querySelectorAll('.ri-match-card[data-entry-id]');
+
+  if (!q) {
+    cards.forEach(c => c.style.display = '');
+    return;
+  }
+  cards.forEach(card => {
+    const text = (card.dataset.searchText || '').toLowerCase();
+    card.style.display = text.includes(q) ? '' : 'none';
+  });
+}
+
 function riConfirmMatch() {
+  const btn = document.getElementById('riConfirmMatchBtn');
+  if (btn) btn.disabled = true;
+
   const ex = _riExtracted;
   const isFFL = ex.receiptType === 'ffl';
   const auditNote = isFFL
@@ -4670,20 +4769,12 @@ function riConfirmMatch() {
   if (_riSelectedMatchId === null) {
     const newEntry = {
       id: Date.now().toString(),
-      name: ex.name || 'Unknown Firearm',
-      manufacturer: ex.manufacturer || '',
-      serial: ex.serial || '',
-      upc: ex.upc || '',
-      mpn: ex.mpn || '',
-      caliber: ex.caliber || '',
-      purchasePrice: ex.price || '',
-      purchaseDate: ex.date || '',
-      fflFee: ex.fflFee || '',
-      fflPickupDate: ex.pickupDate || '',
+      name: ex.name || 'Unknown Firearm', manufacturer: ex.manufacturer || '',
+      serial: ex.serial || '', upc: ex.upc || '', mpn: ex.mpn || '', caliber: ex.caliber || '',
+      purchasePrice: ex.price || '', purchaseDate: ex.date || '',
+      fflFee: ex.fflFee || '', fflPickupDate: ex.pickupDate || '',
       status: 'owned', location: '', needPic: true,
-      notes: isFFL
-        ? `Imported from FFL transfer receipt${ex.fflFee ? '. FFL fee: $' + ex.fflFee : ''}${ex.pickupDate ? '. Picked up: ' + ex.pickupDate : ''}. Purchase price/date may need to be entered manually.`
-        : 'Imported from purchase receipt',
+      notes: isFFL ? `Imported from FFL transfer receipt${ex.fflFee ? '. FFL fee: $'+ex.fflFee : ''}${ex.pickupDate ? '. Picked up: '+ex.pickupDate : ''}. Purchase price/date may need to be entered manually.` : 'Imported from purchase receipt',
       photo: '', gunType: '', marketValue: '', marketTrend: '', marketReason: '', marketConfidence: '', marketUpdated: '', lastCleaned: '', roundCount: '', maintNotes: '', priceHistory: '',
       auditLog: [{ ts: new Date().toISOString(), note: 'Created via ' + (isFFL ? 'FFL Transfer' : 'Purchase') + ' Receipt Import' }]
     };
@@ -4712,14 +4803,11 @@ function riConfirmMatch() {
 
   if (typeof showToast === 'function') showToast('📄 Receipt imported successfully ✓');
 
-  // If more firearms on this receipt, load the next one
   _riCurrentIndex++;
   if (_riCurrentIndex < _riFirearms.length) {
     const remaining = _riFirearms.length - _riCurrentIndex;
-    document.getElementById('riDoneSub').textContent += ` — ${remaining} more firearm${remaining > 1 ? 's' : ''} on this receipt.`;
-    setTimeout(() => {
-      riLoadCurrentFirearm();
-    }, 1800);
+    document.getElementById('riDoneSub').textContent += ` — Loading next firearm (${remaining} remaining)…`;
+    setTimeout(() => riLoadCurrentFirearm(), 1600);
   } else {
     riGoStep(5);
   }
