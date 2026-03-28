@@ -4466,7 +4466,7 @@ function riLoadCurrentFirearm() {
 // ─── UPC / MPN Lookup via Gemini ──────────────────────────────
 async function riLookupUPC() {
   const geminiKey = localStorage.getItem('armory_gemini_key') || '';
-  if (!geminiKey) return; // silently skip if no Gemini key
+  if (!geminiKey) return;
 
   const name = document.getElementById('riName').value.trim();
   const mfr = document.getElementById('riManufacturer').value.trim();
@@ -4475,25 +4475,35 @@ async function riLookupUPC() {
   const currentUPC = document.getElementById('riUPC').value.trim();
   const currentMPN = document.getElementById('riMPN').value.trim();
 
-  if (!name && !mfr) return;
+  if (!name && !mfr && !serial) return;
 
   const upcStatus = document.getElementById('riUpcLookupStatus');
   if (upcStatus) upcStatus.innerHTML = '<span class="ri-spinner"></span> Looking up UPC/MPN…';
 
   try {
-    const query = `Firearm: ${[mfr, name, caliber].filter(Boolean).join(' ')}${serial ? ' serial ' + serial : ''}`;
-    const prompt = `You are a firearm product database expert. Given this firearm: "${query}"
+    const parts = [mfr, name, caliber].filter(Boolean);
+    const query = parts.join(' ');
+    const prompt = `You are a firearm product database expert specializing in UPC barcodes and manufacturer part numbers.
 
-Find the official UPC barcode and manufacturer part number (MPN).
-Return ONLY a raw JSON object, no markdown:
+Given this firearm information extracted from a receipt:
+- Manufacturer: "${mfr || 'unknown'}"
+- Model name: "${name || 'unknown'}"
+- Caliber: "${caliber || 'unknown'}"
+- Serial number: "${serial || 'not provided'}"
+
+The serial number prefix can help narrow down the exact variant and production year — use it if helpful.
+Your goal is to find the exact UPC barcode (12 digits) and manufacturer part number (MPN/SKU) for this specific firearm.
+
+Return ONLY a raw JSON object, no markdown, no backticks:
 {
-  "upc": "12-digit UPC number or empty string if unknown",
-  "mpn": "Manufacturer part number / model number (e.g. PA195S102, 764503032440) or empty string",
+  "upc": "12-digit UPC number, or empty string if not confidently known",
+  "mpn": "Manufacturer part number or model SKU (e.g. PA195S102, GNS1950203, BI-AXGT9-01), or empty string",
+  "modelResolved": "The exact model/variant you resolved this to (e.g. Beretta 92X Performance 9mm)",
   "confidence": "high / medium / low",
-  "note": "brief note if multiple variants exist"
+  "note": "Brief note — e.g. if multiple UPCs exist for variants, explain which one and why"
 }
 
-Only return a UPC/MPN if you are confident it is correct for this specific model/variant. Use "" if unsure.`;
+Only provide UPC/MPN values you are confident about. Do NOT guess. Use empty string if uncertain.`;
 
     const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`;
     const res = await fetch(url, {
@@ -4519,9 +4529,10 @@ Only return a UPC/MPN if you are confident it is correct for this specific model
 
     if (upcStatus) {
       if (result.upc || result.mpn) {
-        upcStatus.innerHTML = `<span style="color:var(--green);">✓ UPC/MPN found (${result.confidence} confidence)${result.note ? ' — ' + result.note : ''}</span>`;
+        const resolvedLabel = result.modelResolved ? `<div style="color:var(--muted);margin-top:2px;">Resolved: ${result.modelResolved}</div>` : '';
+        upcStatus.innerHTML = `<span style="color:var(--green);">✓ Found (${result.confidence} confidence)${result.note ? ' — ' + result.note : ''}</span>${resolvedLabel}`;
       } else {
-        upcStatus.innerHTML = `<span style="color:var(--muted);">UPC/MPN not found — enter manually</span>`;
+        upcStatus.innerHTML = `<span style="color:var(--muted);">UPC/MPN not found — enter manually or try correcting the model name</span>`;
       }
     }
   } catch(err) {
