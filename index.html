@@ -9,6 +9,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-storage-compat.js"></script>
 <script>
@@ -113,12 +114,51 @@
     };
 
     window._fbStorage = firebase.storage();
-    window._fbReady = true;
-    console.log("Firebase initialized successfully");
-    document.dispatchEvent(new Event('firebase-ready'));
+
+    // ── Google Sign-In (persistent — stays signed in forever) ──
+    const auth = firebase.auth();
+    auth.setPersistence(firebase.auth.Auth.Persistence.LOCAL);
+
+    window.signInWithGoogle = async function() {
+      const btn = document.getElementById('googleSignInBtn');
+      const errEl = document.getElementById('signInError');
+      if (btn) { btn.textContent = 'Signing in…'; btn.disabled = true; }
+      try {
+        const provider = new firebase.auth.GoogleAuthProvider();
+        await auth.signInWithPopup(provider);
+      } catch(e) {
+        if (btn) { btn.innerHTML = '<svg width="18" height="18" viewBox="0 0 18 18"><path fill="#4285F4" d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844c-.209 1.125-.843 2.078-1.796 2.717v2.258h2.908c1.702-1.567 2.684-3.875 2.684-6.615z"/><path fill="#34A853" d="M9 18c2.43 0 4.467-.806 5.956-2.18l-2.908-2.259c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332C2.438 15.983 5.482 18 9 18z"/><path fill="#FBBC05" d="M3.964 10.71c-.18-.54-.282-1.117-.282-1.71s.102-1.17.282-1.71V4.958H.957C.347 6.173 0 7.548 0 9s.347 2.827.957 4.042l3.007-2.332z"/><path fill="#EA4335" d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0 5.482 0 2.438 2.017.957 4.958L3.964 7.29C4.672 5.163 6.656 3.58 9 3.58z"/></svg> Sign in with Google'; btn.disabled = false; }
+        if (errEl) { errEl.textContent = 'Sign-in failed: ' + (e.message || 'try again'); errEl.style.display = 'block'; }
+      }
+    };
+
+    // Watch auth state — fires immediately on load if already signed in
+    auth.onAuthStateChanged(user => {
+      const screen = document.getElementById('signInScreen');
+      if (user) {
+        // Signed in — store UID for reference, hide sign-in screen
+        window._currentUID = user.uid;
+        window._currentUser = user;
+        if (screen) screen.style.display = 'none';
+        window._fbReady = true;
+        document.dispatchEvent(new Event('firebase-ready'));
+      } else {
+        // Not signed in — show sign-in screen, block app
+        if (screen) screen.style.display = 'flex';
+        window._fbReady = false;
+      }
+    });
+
+    // Don't dispatch firebase-ready here — onAuthStateChanged handles it
+    window._fbStorage = firebase.storage();
+    console.log("Firebase initialized successfully — waiting for auth…");
+    return; // exit early, onAuthStateChanged takes over
   } catch(e) {
     console.error("Firebase init error:", e);
     window._fbReady = false;
+    // Show sign-in screen even on error so user isn't stuck on blank screen
+    const s = document.getElementById('signInScreen');
+    if (s) { s.style.display = 'flex'; }
     document.dispatchEvent(new Event('firebase-ready'));
   }
   } // end initFirebase
@@ -130,7 +170,25 @@
     initFirebase();
   }
 </script>
+<!-- SIGN-IN SCREEN — shown only when not authenticated -->
+<div id="signInScreen" style="display:none;position:fixed;inset:0;background:var(--accent);z-index:99999;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:24px;">
+  <div style="text-align:center;">
+    <div style="font-family:'Inter',sans-serif;font-size:36px;font-weight:700;color:#fff;letter-spacing:4px;text-transform:uppercase;">ARMORY</div>
+    <div style="font-size:11px;font-weight:300;color:#c9a84c;letter-spacing:3px;text-transform:uppercase;margin-top:4px;">Personal Firearms Tracker</div>
+  </div>
+  <div style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);border-radius:14px;padding:28px 32px;text-align:center;max-width:320px;width:90%;">
+    <div style="color:rgba(255,255,255,0.7);font-size:13px;margin-bottom:20px;line-height:1.6;">Your inventory is private and secured.<br>Sign in with your Google account to continue.</div>
+    <button id="googleSignInBtn" onclick="signInWithGoogle()" style="display:flex;align-items:center;justify-content:center;gap:10px;width:100%;padding:12px 20px;background:#fff;color:#1c3557;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;transition:opacity 0.2s;">
+      <svg width="18" height="18" viewBox="0 0 18 18"><path fill="#4285F4" d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844c-.209 1.125-.843 2.078-1.796 2.717v2.258h2.908c1.702-1.567 2.684-3.875 2.684-6.615z"/><path fill="#34A853" d="M9 18c2.43 0 4.467-.806 5.956-2.18l-2.908-2.259c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332C2.438 15.983 5.482 18 9 18z"/><path fill="#FBBC05" d="M3.964 10.71c-.18-.54-.282-1.117-.282-1.71s.102-1.17.282-1.71V4.958H.957C.347 6.173 0 7.548 0 9s.347 2.827.957 4.042l3.007-2.332z"/><path fill="#EA4335" d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0 5.482 0 2.438 2.017.957 4.958L3.964 7.29C4.672 5.163 6.656 3.58 9 3.58z"/></svg>
+      Sign in with Google
+    </button>
+    <div id="signInError" style="color:#f87171;font-size:12px;margin-top:12px;display:none;"></div>
+  </div>
+  <div style="color:rgba(255,255,255,0.35);font-size:11px;">Only your Google account can access this data</div>
+</div>
+
 <style>
+  #signInScreen { display: none; }
   :root {
     --bg: #f0f2f5;
     --surface: #ffffff;
@@ -974,6 +1032,10 @@
     <div class="stat"><div class="stat-num" id="stat-want">0</div><div class="stat-label">Want</div></div>
     <div class="stat"><div class="stat-num" id="stat-pic">0</div><div class="stat-label">Need Pic</div></div>
     <div class="stat" onclick="this.querySelector('.stat-num').classList.toggle('revealed')" title="Click to reveal"><div class="stat-num" id="stat-invest" style="font-size:16px;filter:blur(5px);transition:filter 0.2s;cursor:pointer;">$0</div><div class="stat-label">Invested 🔒</div></div>
+    <div class="stat" onclick="showUsageDashboard()" title="View API usage — click for details" style="cursor:pointer;">
+      <div class="stat-num" id="stat-searches" style="font-size:16px;color:#c9a84c;">0</div>
+      <div class="stat-label">Searches 📊</div>
+    </div>
   </div>
 </div>
 
@@ -1346,7 +1408,7 @@
 // ─── Data ───────────────────────────────────────────────────────
 const STORAGE_KEY = 'armory_v2';
 
-// ─── AI Lookup — Gemini Direct ──────────────────────────────
+// ─── Gemini Direct (non-search calls: receipt scan, market value) ──
 const GEMINI_KEY = localStorage.getItem("armory_gemini_key") || "";
 let _aiSearching = false;
 
@@ -1393,6 +1455,119 @@ function parseLenientJSON(rawText) {
     console.error("parseLenientJSON failed:", rawText.substring(0,200));
     throw new Error("No valid JSON found in AI response.");
   }
+}
+
+// ─── Grounded Search Fetch (free tier: 500/day) ──────────────
+// Uses Google Search grounding so Gemini searches the web instead of guessing
+async function callGeminiSearch(prompt) {
+  const key = getApiKey();
+  if (!key) throw new Error('No Gemini key set');
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`;
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      tools: [{ google_search: {} }],
+      generationConfig: { temperature: 0 }
+    })
+  });
+  const j = await resp.json();
+  if (!resp.ok || j.error) throw new Error((j.error?.message || 'API error').substring(0, 100));
+  trackUsage('search'); // track grounded search usage
+  // Collect all text parts (grounded responses may span multiple parts)
+  const text = (j.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('');
+  // Extract grounding sources to show user
+  const sources = (j.candidates?.[0]?.groundingMetadata?.groundingChunks || [])
+    .map(c => c.web?.uri || '').filter(Boolean).slice(0, 3);
+  return { text, sources };
+}
+
+// Parse JSON from grounded response text
+function parseSearchJSON(text) {
+  try {
+    const clean = text.replace(/```json|```/g, '').trim();
+    const s = clean.indexOf('{'), e = clean.lastIndexOf('}');
+    if (s !== -1 && e > s) return JSON.parse(clean.substring(s, e + 1));
+  } catch(e) {}
+  return {};
+}
+
+// ─── Verified Firearm Database ───────────────────────────────
+// Known-correct UPC/MPN/name combos — these override AI results
+// Add entries here as you discover corrections
+const VERIFIED_FIREARMS = [
+  // ── COLT ──────────────────────────────────────────────────────
+  {
+    upc: '098289003393',
+    mpn: 'PYTHON-SP3NS',
+    name: 'Colt Python Combat Elite',
+    manufacturer: 'Colt',
+    caliber: '.357 Mag',
+    gunType: 'Revolver',
+    keywords: ['colt python combat elite', 'python combat elite', 'python-sp3ns']
+  },
+  {
+    upc: '098289111227',
+    mpn: '05072XE',
+    name: 'Colt Gold Cup Trophy',
+    manufacturer: 'Colt',
+    caliber: '.45 ACP',
+    gunType: 'Handgun',
+    keywords: ['colt gold cup trophy', 'gold cup trophy', '05072xe']
+  },
+  {
+    upc: '098289001283',
+    mpn: 'KCOBRA-SB3BB',
+    name: 'Colt King Cobra',
+    manufacturer: 'Colt',
+    caliber: '.357 Mag',
+    gunType: 'Revolver',
+    keywords: ['colt king cobra', 'king cobra 357', 'kcobra-sb3bb', '098289001283']
+  },
+];
+
+// Look up a firearm in the verified database
+// Pass any combo of upc, mpn, name — returns verified record or null
+function verifiedLookup({ upc, mpn, name, manufacturer } = {}) {
+  const upcClean = (upc || '').replace(/[^0-9]/g, '');
+  const mpnClean = (mpn || '').toLowerCase().trim();
+  const nameClean = (name || '').toLowerCase().trim();
+  const mfrClean = (manufacturer || '').toLowerCase().trim();
+
+  for (const rec of VERIFIED_FIREARMS) {
+    // Match by UPC (most reliable)
+    if (upcClean && rec.upc && upcClean === rec.upc.replace(/[^0-9]/g, '')) return rec;
+    // Match by MPN
+    if (mpnClean && rec.mpn && mpnClean === rec.mpn.toLowerCase()) return rec;
+    // Match by keyword (name + manufacturer combo)
+    if (nameClean && rec.keywords) {
+      const haystack = mfrClean + ' ' + nameClean;
+      if (rec.keywords.some(k => haystack.includes(k) || nameClean.includes(k))) return rec;
+    }
+  }
+  return null;
+}
+
+// Merge verified data over AI result — verified always wins
+function applyVerifiedData(aiResult, entryData = {}) {
+  const verified = verifiedLookup({
+    upc:          aiResult.upc || entryData.upc,
+    mpn:          aiResult.mpn || entryData.mpn,
+    name:         aiResult.official_name || entryData.name,
+    manufacturer: aiResult.manufacturer || entryData.manufacturer,
+  });
+  if (!verified) return aiResult;
+  return {
+    ...aiResult,
+    upc:           verified.upc          || aiResult.upc,
+    mpn:           verified.mpn          || aiResult.mpn,
+    official_name: verified.name         || aiResult.official_name,
+    manufacturer:  verified.manufacturer || aiResult.manufacturer,
+    caliber:       verified.caliber      || aiResult.caliber,
+    gunType:       verified.gunType      || aiResult.gunType,
+    _verified:     true,
+  };
 }
 
 async function callClaude(prompt) {
@@ -2027,6 +2202,7 @@ async function handlePhotoUpload(id, input) {
   window._syncPaused = true; // Pause Firebase sync during upload
   setBusy(true);
   showToast('⏳ Sizing down & uploading...');
+  trackUsage('photo');
 
   // Get EXIF-corrected bitmap — browser handles orientation natively
   const bitmap = await getOrientedBitmap(file);
@@ -2329,7 +2505,7 @@ function cancelNameEdit(id) {
 let _nameConfirmIdx = -1;
 let _nameConfirmNewName = "";
 
-// ─── AI Lookup Review Dialog ─────────────────────────────────
+// ─── Search Results Review Dialog ─────────────────────────────────
 // Shows all AI-found data side-by-side with current values
 // User picks what to keep — nothing is auto-saved
 function showLookupReview(idx, p) {
@@ -2364,9 +2540,10 @@ function showLookupReview(idx, p) {
   box.style.cssText = 'background:var(--surface);border-radius:14px;padding:24px;max-width:520px;width:100%;max-height:85vh;overflow-y:auto;box-shadow:0 8px 40px rgba(0,0,0,0.3);border-top:4px solid var(--accent2);';
 
   box.innerHTML = `
-    <div style="font-size:16px;font-weight:700;color:var(--accent);margin-bottom:4px;">🔍 AI Lookup Results</div>
-    <div style="font-size:12px;color:var(--muted);margin-bottom:${serialNote?'6px':'16px'};">${escHtml(entry.name)} — check each field and choose what to keep</div>
-    ${serialNote ? `<div style="font-size:11px;background:rgba(37,99,168,0.07);border:1px solid rgba(37,99,168,0.2);border-radius:6px;padding:6px 10px;color:var(--accent2);margin-bottom:12px;">🔍 Serial ID: ${escHtml(serialNote)}</div>` : ''}
+    <div style="font-size:16px;font-weight:700;color:var(--accent);margin-bottom:4px;">🔍 Search Results</div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:6px;">${escHtml(entry.name)} — check each field and choose what to keep</div>
+    ${serialNote ? `<div style="font-size:11px;background:rgba(37,99,168,0.07);border:1px solid rgba(37,99,168,0.2);border-radius:6px;padding:6px 10px;color:var(--accent2);margin-bottom:8px;">🔍 Serial ID: ${escHtml(serialNote)}</div>` : ''}
+    ${(p._sources && p._sources.length) ? `<div style="font-size:10px;color:var(--muted);margin-bottom:10px;padding:5px 8px;background:rgba(22,163,74,0.05);border:1px solid rgba(22,163,74,0.2);border-radius:6px;">🌐 Sources: ${p._sources.map(s=>`<a href="${s}" target="_blank" style="color:var(--accent2);text-decoration:none;">${new URL(s).hostname}</a>`).join(' · ')}</div>` : ''}
     <div style="display:flex;gap:10px;margin-bottom:10px;flex-wrap:wrap;">
       <span style="font-size:11px;padding:2px 8px;border-radius:4px;background:rgba(22,163,74,0.1);color:#16a34a;">🟢 Empty — safe to fill</span>
       <span style="font-size:11px;padding:2px 8px;border-radius:4px;background:rgba(245,158,11,0.1);color:#d97706;">🟡 Has data — review carefully</span>
@@ -2495,6 +2672,100 @@ const VS_ROW_H = 58;
 const VS_PAGE  = 40;
 let   _vsStart = 0;
 let   _vsObs   = null;
+// ─── Usage Tracker ───────────────────────────────────────────
+// Tracks locally — resets daily. No API needed.
+const USAGE_KEY = 'armory_usage';
+
+function getUsage() {
+  try {
+    const raw = localStorage.getItem(USAGE_KEY);
+    const u = raw ? JSON.parse(raw) : {};
+    const today = new Date().toISOString().slice(0,10);
+    if (u.date !== today) return { date: today, searches: 0, scans: 0, photos: 0 };
+    return u;
+  } catch(e) { return { date: new Date().toISOString().slice(0,10), searches: 0, scans: 0, photos: 0 }; }
+}
+
+function trackUsage(type) {
+  const u = getUsage();
+  if (type === 'search') u.searches++;
+  if (type === 'scan')   u.scans++;
+  if (type === 'photo')  u.photos++;
+  localStorage.setItem(USAGE_KEY, JSON.stringify(u));
+  const el = document.getElementById('stat-searches');
+  if (el) el.textContent = u.searches + (u.searches >= 400 ? ' ⚠' : '');
+  if (el) el.style.color = u.searches >= 400 ? 'var(--red)' : u.searches >= 250 ? '#f59e0b' : '#c9a84c';
+}
+
+function updateUsageStat() {
+  const u = getUsage();
+  const el = document.getElementById('stat-searches');
+  if (!el) return;
+  el.textContent = u.searches + (u.searches >= 400 ? ' ⚠' : '');
+  el.style.color = u.searches >= 400 ? 'var(--red)' : u.searches >= 250 ? '#f59e0b' : '#c9a84c';
+}
+
+function showUsageDashboard() {
+  const u = getUsage();
+  const FREE_SEARCH_LIMIT = 500;
+  const searchPct = Math.min(100, Math.round((u.searches / FREE_SEARCH_LIMIT) * 100));
+  const searchColor = searchPct >= 80 ? 'var(--red)' : searchPct >= 50 ? '#f59e0b' : 'var(--green)';
+
+  const existing = document.getElementById('usageDlg');
+  if (existing) { existing.remove(); return; }
+
+  const dlg = document.createElement('div');
+  dlg.id = 'usageDlg';
+  dlg.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px;';
+
+  const box = document.createElement('div');
+  box.style.cssText = 'background:var(--surface);border-radius:14px;padding:24px;max-width:420px;width:100%;box-shadow:0 8px 40px rgba(0,0,0,0.3);border-top:4px solid var(--accent2);';
+  box.innerHTML = `
+    <div style="font-size:16px;font-weight:700;color:var(--accent);margin-bottom:4px;">📊 API Usage Tracker</div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:20px;">Resets daily at midnight. All services below are free tier.</div>
+
+    <div style="margin-bottom:16px;">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px;">
+        <div style="font-size:13px;font-weight:600;">🌐 Google Search Grounding</div>
+        <div style="font-size:12px;color:${searchColor};font-weight:700;">${u.searches} / ${FREE_SEARCH_LIMIT}</div>
+      </div>
+      <div style="background:var(--surface2);border-radius:4px;height:8px;overflow:hidden;">
+        <div style="height:100%;background:${searchColor};border-radius:4px;width:${searchPct}%;transition:width 0.3s;"></div>
+      </div>
+      <div style="font-size:10px;color:var(--muted);margin-top:4px;">Free up to 500/day — resets at midnight • UPC/MPN lookups</div>
+    </div>
+
+    <div style="margin-bottom:16px;">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px;">
+        <div style="font-size:13px;font-weight:600;">📄 Receipt / Label Scans</div>
+        <div style="font-size:12px;color:var(--green);font-weight:700;">${u.scans} today</div>
+      </div>
+      <div style="font-size:10px;color:var(--muted);">Free — ~1,000/day limit • Gemini Vision</div>
+    </div>
+
+    <div style="margin-bottom:20px;">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px;">
+        <div style="font-size:13px;font-weight:600;">📷 Photo Uploads</div>
+        <div style="font-size:12px;color:var(--green);font-weight:700;">${u.photos} today</div>
+      </div>
+      <div style="font-size:10px;color:var(--muted);">Firebase Storage free tier: 5GB total</div>
+    </div>
+
+    <div style="background:rgba(37,99,168,0.06);border:1px solid rgba(37,99,168,0.2);border-radius:8px;padding:10px 12px;margin-bottom:16px;font-size:11px;color:var(--muted);line-height:1.7;">
+      <strong style="color:var(--text);">Verify exact usage:</strong><br>
+      • Gemini: <a href="https://aistudio.google.com" target="_blank" style="color:var(--accent2);">aistudio.google.com</a> → Usage<br>
+      • Firebase: <a href="https://console.firebase.google.com" target="_blank" style="color:var(--accent2);">console.firebase.google.com</a> → Storage → Usage
+    </div>
+
+    <div style="display:flex;justify-content:flex-end;">
+      <button onclick="document.getElementById('usageDlg').remove();" style="padding:7px 16px;border-radius:6px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:13px;font-weight:600;">Close</button>
+    </div>`;
+
+  dlg.appendChild(box);
+  dlg.onclick = e => { if (e.target === dlg) dlg.remove(); };
+  document.body.appendChild(dlg);
+}
+
 function saveAll() {
   // Debounce — don't spam Firebase on rapid edits
   const now = Date.now();
@@ -2530,6 +2801,7 @@ function saveAll() {
 
 // ─── Render ────────────────────────────────────────────────────
 function updateStats() {
+  updateUsageStat();
   document.getElementById('stat-total').textContent = data.length;
   document.getElementById('stat-owned').textContent = data.filter(d=>d.status==='owned'||d.status==='new').length;
   document.getElementById('stat-want').textContent = data.filter(d=>d.status==='want'||d.status==='priority').length;
@@ -2668,7 +2940,7 @@ function renderMobileCards() {
 
       <div class="fire-card-actions">
         <button onclick="openEditModal(${d.id})">✏️ Edit</button>
-        <button onclick="lookupUPC(${d.id})">🔍 AI</button>
+        <button onclick="lookupUPC(${d.id})">🔍 Search</button>
         <button onclick="searchLinks(data.find(x=>x.id===${d.id}))">🔗</button>
         ${d.upc||d.mpn ? `<button onclick="copyToClipboard('${d.upc||d.mpn}','${d.upc?'UPC':'MPN'}')">📋</button>` : ''}
         <button class="del" onclick="deleteEntry(${d.id})">🗑️</button>
@@ -2773,7 +3045,7 @@ function rowHTML(d, i) { return `
           onkeydown="if(event.key==='Enter'){ event.preventDefault(); this.blur(); }"
           style="width:130px;font-family:'JetBrains Mono',monospace;font-size:12px;" />
         <div style="display:flex;gap:4px;margin-top:3px;">
-          <button class="upc-btn" onclick="lookupUPC(${d.id})">🔍 AI Lookup</button>
+          <button class="upc-btn" onclick="lookupUPC(${d.id})">🔍 Search</button>
           ${d.upc ? `<button class="copy-btn" onclick="copyToClipboard('${d.upc}','UPC')" title="Copy UPC">📋</button>` : ''}
           <button class="copy-btn" onclick="searchLinks(data.find(x=>x.id===${d.id}))" title="Search online">🔗</button>
         </div>
@@ -2787,7 +3059,7 @@ function rowHTML(d, i) { return `
           onkeydown="if(event.key==='Enter'){ event.preventDefault(); this.blur(); }"
           style="width:120px;font-family:'JetBrains Mono',monospace;font-size:12px;" />
         <div style="display:flex;gap:4px;margin-top:3px;">
-          <button class="upc-btn" onclick="lookupByMPNBtn(${d.id})">🔍 AI Lookup</button>
+          <button class="upc-btn" onclick="lookupByMPNBtn(${d.id})">🔍 Search</button>
           ${d.mpn ? `<button class="copy-btn" onclick="copyToClipboard('${d.mpn}','MPN')" title="Copy MPN">📋</button>` : ''}
         </div>
       </td>
@@ -3659,11 +3931,13 @@ Name: "${entry.name}", Manufacturer: "${entry.manufacturer || 'unknown'}".${seri
 Return ONLY this JSON with no markdown:
 {"official_name":"","manufacturer":"","mpn":"","description":"","gunType":"","caliber":"","serialModelNote":"what serial prefix confirms"}
 gunType: Handgun|Revolver|Rifle|Shotgun|Bolt Action|Lever Action|Bullpup|PCC|AR Pistol|Suppressor|Optic|Accessory|Other`;
-    const text = await callClaude(prompt);
-    let p = {};
-    try { p = JSON.parse(text.replace(/```json|```/g,'').trim()); } catch(e) {}
+    const { text, sources } = await callGeminiSearch(prompt);
+    let p = parseSearchJSON(text);
     const idx = data.findIndex(d=>d.id===id);
     if(idx < 0) return;
+    p = applyVerifiedData(p, entry);
+    p._sources = sources;
+    if (p._verified) showToast('✓ Verified data applied from known database');
     showLookupReview(idx, p);
   } catch(e) {
     console.error("UPC lookup error:", e.message);
@@ -3690,11 +3964,13 @@ Caliber: "${entry.caliber || 'unknown'}"${serialNote}
 
 The MPN and serial together should uniquely identify the exact product. Return ONLY JSON, no markdown:
 {"official_name":"","manufacturer":"","upc":"exact 12-digit UPC or empty string if not certain","caliber":"e.g. 9mm","gunType":"Handgun|Revolver|Rifle|Shotgun|Bolt Action|Lever Action|Bullpup|PCC|AR Pistol|Suppressor|Optic|Accessory|Other","description":"brief: action, barrel, capacity","serialModelNote":"what the serial prefix confirms about the model"}`;
-    const text = await callClaude(prompt);
-    let p = {};
-    try { p = JSON.parse(text.replace(/```json|```/g,'').trim()); } catch(e) {}
+    const { text, sources } = await callGeminiSearch(prompt);
+    let p = parseSearchJSON(text);
     const idx = data.findIndex(d=>d.id===id);
     if(idx < 0) return;
+    p = applyVerifiedData(p, entry);
+    p._sources = sources;
+    if (p._verified) showToast('✓ Verified data applied from known database');
     showLookupReview(idx, p);
   } catch(e) {
     showToast("❌ " + (e.message||"MPN lookup failed").substring(0,60));
@@ -3711,7 +3987,7 @@ async function lookupByMPNBtn(id) {
   await lookupByMPN(id, mpn);
 }
 
-// ─── AI Lookup: by Name or MPN ───────────────────────────────
+// ─── Search Lookup: by Name or MPN ───────────────────────────────
 async function lookupUPC(id) {
   const entry = data.find(d=>d.id===id);
   if(!entry) return;
@@ -3721,7 +3997,7 @@ async function lookupUPC(id) {
   const btn = document.getElementById("upcbtn-"+id);
   if(btn) btn.innerHTML = '<span class="loading-spin"></span> Searching...';
   try {
-    const serialHint = entry.serial ? `\nSerial number: "${entry.serial}" — use the serial PREFIX to identify the exact model/variant/generation. Each manufacturer has documented serial ranges.` : '';
+    const serialHint = entry.serial ? `\n- Serial number: "${entry.serial}" (prefix identifies exact variant/generation)` : '';
     const prompt = `You are a firearms UPC and product database expert with deep knowledge of manufacturer serial number formats.
 
 Firearm to identify:
@@ -3741,20 +4017,21 @@ Return ONLY this JSON, no markdown:
 {"upc":"","official_name":"","manufacturer":"","mpn":"","description":"","gunType":"","caliber":"","serialModelNote":"brief note on what serial prefix reveals about the model"}
 upc: exact 12-digit UPC — empty string if not 100% certain
 gunType: Handgun|Revolver|Rifle|Shotgun|Bolt Action|Lever Action|Bullpup|PCC|AR Pistol|Suppressor|Optic|Accessory|Other`;
-    const text = await callClaude(prompt);
-    let p = {};
-    try { p = JSON.parse(text.replace(/```json|```/g,'').trim()); } catch(e) {}
+    const { text, sources } = await callGeminiSearch(prompt);
+    let p = parseSearchJSON(text);
     const idx = data.findIndex(d=>d.id===id);
     if(idx < 0) return;
-    // Show review dialog — let user decide what to keep
+    p = applyVerifiedData(p, entry);
+    p._sources = sources;
+    if (p._verified) showToast('✓ Verified data applied from known database');
     showLookupReview(idx, p);
   } catch(e) {
-    console.error("AI lookup error:", e.message);
+    console.error("Search lookup error:", e.message);
     showToast("❌ " + (e.message||"Lookup failed").substring(0,60));
   }
   clearTimeout(lockTimer2);
   _aiSearching = false;
-  if(btn) btn.innerHTML = "🔍 AI Lookup";
+  if(btn) btn.innerHTML = "🔍 Search";
 }
 
 
@@ -3942,6 +4219,7 @@ async function scanLabelPhoto(input) {
 
   const statusEl = document.getElementById('labelScanStatus');
   if (statusEl) statusEl.innerHTML = '<span class="loading-spin"></span> Scanning label…';
+  trackUsage('scan');
 
   try {
     // Compress before sending
@@ -4350,9 +4628,9 @@ async function startBulkLookup() {
       const prompt = `Firearm ${searchType}: "${searchKey}", Name: "${entry.name}". Return ONLY JSON, no markdown:
 {"manufacturer":"company name e.g. Glock","gunType":"Handgun|Revolver|Rifle|Shotgun|Bolt Action|Lever Action|Bullpup|PCC|AR Pistol|Suppressor|Optic|Accessory|Other","caliber":"e.g. 9mm","upc":"exact 12-digit UPC or empty","mpn":"manufacturer part number","official_name":"official product name","description":"brief: action, barrel, capacity"}`;
 
-      const text = await callClaude(prompt);
-      let parsed = {};
-      try { parsed = JSON.parse(text.replace(/```json|```/g,'').trim()); } catch(e) {}
+      const { text: bulkText, sources: bulkSources } = await callGeminiSearch(prompt);
+      let parsed = parseSearchJSON(bulkText);
+      parsed._sources = bulkSources;
 
       const idx = data.findIndex(d=>d.id===entry.id);
       if(idx>=0) {
@@ -4380,11 +4658,12 @@ async function startBulkLookup() {
             dlg.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:9999;display:flex;align-items:flex-end;justify-content:center;';
             dlg.innerHTML = `
               <div style="background:var(--surface);border-radius:14px 14px 0 0;padding:20px 18px 32px;width:100%;max-width:520px;box-shadow:0 -4px 24px rgba(0,0,0,0.2);border-top:4px solid var(--accent2);max-height:85vh;overflow-y:auto;">
-                <div style="font-size:15px;font-weight:700;margin-bottom:3px;">Review AI Results</div>
+                <div style="font-size:15px;font-weight:700;margin-bottom:3px;">🔍 Search Results</div>
                 <div style="color:var(--muted);font-size:12px;margin-bottom:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${entry.name}</div>
-                <table style="width:100%;border-collapse:collapse;background:var(--bg);border-radius:8px;overflow:hidden;margin-bottom:16px;">
+                <table style="width:100%;border-collapse:collapse;background:var(--bg);border-radius:8px;overflow:hidden;margin-bottom:10px;">
                   ${rows}
                 </table>
+                ${(proposed._sources && proposed._sources.length) ? `<div style="font-size:10px;color:var(--muted);margin-bottom:10px;padding:4px 8px;background:rgba(22,163,74,0.05);border:1px solid rgba(22,163,74,0.2);border-radius:5px;">🌐 ${proposed._sources.map(s=>{try{return'<a href="'+s+'" target="_blank" style="color:var(--accent2);">'+new URL(s).hostname+'</a>';}catch(e){return s;}}).join(' · ')}</div>` : ''}
                 <div style="display:flex;gap:10px;">
                   <button id="dlgSkip" class="btn btn-ghost" style="flex:1;">Skip</button>
                   <button id="dlgAccept" class="btn btn-accent" style="flex:2;">✅ Accept All</button>
@@ -4838,7 +5117,7 @@ if('serviceWorker' in navigator) {
   <div id="receiptImportBox">
     <button onclick="closeReceiptImport()" style="position:absolute;top:14px;right:16px;background:none;border:none;font-size:20px;cursor:pointer;color:var(--muted);">✕</button>
     <h2>📄 RECEIPT IMPORT</h2>
-    <div class="ri-sub">Photograph your receipt — Gemini AI will extract the firearm data and match it to your tracker. Supports FFL transfer receipts and direct purchase receipts.</div>
+    <div class="ri-sub">Photograph your receipt — AI will scan the image and web search will verify UPC/MPN data. Supports FFL transfer receipts and direct purchase receipts.</div>
 
     <!-- STEP 1: Upload -->
     <div class="ri-step active" id="riStep1">
@@ -4878,7 +5157,8 @@ if('serviceWorker' in navigator) {
         <button class="btn btn-ghost btn-sm" id="riToggleTypeBtn" onclick="riToggleReceiptType()" style="font-size:11px;display:none;">Switch Type</button>
       </div>
       <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:4px;text-transform:uppercase;letter-spacing:0.5px;">Extracted Data — Review &amp; Correct</div>
-      <div id="riFirearmCounter" style="font-size:11px;color:#7c3aed;font-weight:600;margin-bottom:8px;"></div>
+      <div id="riFirearmCounter" style="font-size:11px;color:#7c3aed;font-weight:600;margin-bottom:4px;"></div>
+      <div id="riVerifiedBadge" style="display:none;font-size:11px;background:rgba(22,163,74,0.1);border:1px solid rgba(22,163,74,0.3);color:#16a34a;border-radius:6px;padding:4px 10px;margin-bottom:8px;">✓ UPC/MPN corrected from verified database</div>
       <div class="ri-extracted-grid">
         <div class="ri-field" style="grid-column:1/-1;">
           <label>Firearm / Model Name</label>
@@ -4906,7 +5186,7 @@ if('serviceWorker' in navigator) {
         </div>
         <div class="ri-field" style="grid-column:1/-1;">
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-            <button class="btn btn-ghost btn-sm" onclick="riLookupUPC()" style="font-size:11px;">🔍 Lookup UPC/MPN</button>
+            <button class="btn btn-ghost btn-sm" onclick="riLookupUPC()" style="font-size:11px;">🔍 Search UPC/MPN</button>
             <span id="riUpcLookupStatus" style="font-size:11px;color:var(--muted);"></span>
           </div>
         </div>
@@ -5072,7 +5352,8 @@ async function riScanReceipt() {
 
   const statusEl = document.getElementById('riScanStatus');
   document.getElementById('riRawText').style.display = 'none';
-  statusEl.innerHTML = '<span class="ri-spinner"></span>Analyzing receipt with Gemini Vision…';
+  statusEl.innerHTML = '<span class="ri-spinner"></span>Scanning receipt image…';
+  trackUsage('scan');
 
   try {
     const prompt = `You are an FFL receipt expert. This receipt may contain ONE or MULTIPLE firearms.
@@ -5138,7 +5419,21 @@ Single firearm = still use the array with one item. Use "" for any field not vis
       parsed.firearms = [{ name: parsed.name||'', manufacturer: parsed.manufacturer||'', serial: parsed.serial||'', upc: parsed.upc||'', mpn: parsed.mpn||'', caliber: parsed.caliber||'', price: parsed.price||'', date: parsed.date||'' }];
     }
 
-    _riFirearms = parsed.firearms.map(f => ({ ...f, receiptType: parsed.receiptType === 'ffl' ? 'ffl' : 'purchase', fflDealerName: parsed.fflDealerName || '' }));
+    _riFirearms = parsed.firearms.map(f => {
+      const base = { ...f, receiptType: parsed.receiptType === 'ffl' ? 'ffl' : 'purchase', fflDealerName: parsed.fflDealerName || '' };
+      // Check verified database and correct any wrong UPC/MPN/name from the receipt
+      const verified = verifiedLookup({ upc: base.upc, mpn: base.mpn, name: base.name, manufacturer: base.manufacturer });
+      if (verified) {
+        if (verified.upc)  base.upc  = verified.upc;
+        if (verified.mpn)  base.mpn  = verified.mpn;
+        if (verified.name && (!base.name || base.name.length < verified.name.length)) base.name = verified.name;
+        if (verified.manufacturer) base.manufacturer = verified.manufacturer;
+        if (verified.caliber && !base.caliber) base.caliber = verified.caliber;
+        if (verified.gunType && !base.gunType) base.gunType = verified.gunType;
+        base._verified = true;
+      }
+      return base;
+    });
     _riCurrentIndex = 0;
 
     const raw3 = document.getElementById('riRawText3');
@@ -5158,6 +5453,12 @@ function riLoadCurrentFirearm() {
   const total = _riFirearms.length;
   const counterEl = document.getElementById('riFirearmCounter');
   if (counterEl) counterEl.textContent = total > 1 ? `Firearm ${_riCurrentIndex + 1} of ${total}` : '';
+
+  // Show verified badge if this entry was corrected by the verified database
+  const verifiedBadge = document.getElementById('riVerifiedBadge');
+  if (verifiedBadge) {
+    verifiedBadge.style.display = f._verified ? 'block' : 'none';
+  }
 
   // CRITICAL: Reset match selection so next firearm starts fresh
   _riSelectedMatchId = undefined;
@@ -5214,49 +5515,64 @@ async function riLookupUPC() {
   if (!name && !mfr && !serial) return;
 
   const upcStatus = document.getElementById('riUpcLookupStatus');
-  if (upcStatus) upcStatus.innerHTML = '<span class="ri-spinner"></span> Looking up UPC/MPN…';
+  if (upcStatus) upcStatus.innerHTML = '<span class="ri-spinner"></span> Searching web for UPC/MPN…';
 
   try {
+    // Build search query — if we have UPC use it directly, otherwise search by name+mfr
+    const hasUPC = currentUPC && currentUPC.length >= 10;
+    const searchQuery = hasUPC
+      ? `firearm UPC ${currentUPC} manufacturer part number MPN site:gun.deals OR site:gunbroker.com OR site:sportsmansguide.com`
+      : `"${mfr}" "${name}" ${caliber} UPC barcode MPN manufacturer part number site:gun.deals OR site:gunbroker.com OR site:${(mfr||'').toLowerCase().replace(/\s+/g,'')}.com`;
+
     const prompt = `You are a firearm product database expert specializing in UPC barcodes and manufacturer part numbers.
 
-Given this firearm information from a receipt:
+Given this firearm information:
 - Manufacturer: "${mfr || 'unknown'}"
 - Model name: "${name || 'unknown'}"
 - Caliber: "${caliber || 'unknown'}"
 - Serial number: "${serial || 'not provided'}"
+- Current UPC: "${currentUPC || 'unknown'}"
 
-The serial number prefix often identifies the exact variant and production year — use it if helpful.
-Find the exact UPC barcode (12 digits) and manufacturer part number (MPN/SKU).
+The serial number prefix identifies the exact variant. Use it to resolve the precise model/generation.
+Only provide UPC and MPN values you are highly confident about. Leave empty if uncertain.
 
 Return ONLY raw JSON, no markdown:
 {
   "upc": "12-digit UPC or empty string if not confidently known",
-  "mpn": "Manufacturer part number (e.g. PA195S102, GNS1950203) or empty string",
-  "modelResolved": "Exact model/variant resolved (e.g. Beretta 92X Performance 9mm)",
+  "mpn": "Manufacturer part number or empty string if not confidently known",
+  "modelResolved": "Exact model/variant resolved",
   "confidence": "high / medium / low",
-  "note": "Brief note if multiple variants exist or if serial helped narrow it down"
-}
+  "note": "Brief note if multiple variants exist"
+}`;
 
-Only provide values you are confident about. Use empty string if uncertain. Do NOT guess.`;
+    const { text: riText, sources: riSources } = await callGeminiSearch(prompt);
+    let result = parseSearchJSON(riText);
+    result._sources = riSources;
 
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`;
-    const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }) });
-    const data = await res.json();
-    const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-    const clean = raw.replace(/```json|```/g, '').trim();
-    const s = clean.indexOf('{'), e = clean.lastIndexOf('}');
-    let result = {};
-    if (s !== -1 && e > s) result = JSON.parse(clean.substring(s, e + 1));
-
+    // Check verified database and override AI result if we have a known-correct entry
+    const verifiedRi = verifiedLookup({
+      upc: result.upc, mpn: result.mpn,
+      name: document.getElementById('riName').value,
+      manufacturer: document.getElementById('riManufacturer').value
+    });
+    if (verifiedRi) {
+      if (verifiedRi.upc)  result.upc  = verifiedRi.upc;
+      if (verifiedRi.mpn)  result.mpn  = verifiedRi.mpn;
+      if (verifiedRi.name && !document.getElementById('riName').value) document.getElementById('riName').value = verifiedRi.name;
+      result.note = (result.note || '') + ' ✓ Verified from known database';
+    }
     if (result.upc && !currentUPC) { document.getElementById('riUPC').value = result.upc; document.getElementById('riUPC').classList.add('ri-highlight'); }
     if (result.mpn && !currentMPN) { document.getElementById('riMPN').value = result.mpn; document.getElementById('riMPN').classList.add('ri-highlight'); }
 
     if (upcStatus) {
       if (result.upc || result.mpn) {
         const resolvedLabel = result.modelResolved ? `<div style="color:var(--muted);font-size:10px;margin-top:2px;">Resolved: ${result.modelResolved}</div>` : '';
-        upcStatus.innerHTML = `<span style="color:var(--green);">✓ Found (${result.confidence} confidence)${result.note ? ' — ' + result.note : ''}</span>${resolvedLabel}`;
+        const sourcesLabel = (result._sources && result._sources.length)
+          ? `<div style="font-size:10px;margin-top:3px;">🌐 ${result._sources.map(s=>{try{return`<a href="${s}" target="_blank" style="color:var(--accent2);">${new URL(s).hostname}</a>`;}catch(e){return s;}}).join(' · ')}</div>`
+          : '';
+        upcStatus.innerHTML = `<span style="color:var(--green);">✓ Found${result.note ? ' — ' + result.note : ''}</span>${resolvedLabel}${sourcesLabel}`;
       } else {
-        upcStatus.innerHTML = `<span style="color:var(--muted);">UPC/MPN not found — enter manually or correct the model name</span>`;
+        upcStatus.innerHTML = `<span style="color:var(--muted);">Not found — enter manually or try correcting the model name</span>`;
       }
     }
   } catch(err) {
