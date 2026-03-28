@@ -119,13 +119,6 @@
     const auth = firebase.auth();
     auth.setPersistence(firebase.auth.Auth.Persistence.LOCAL);
 
-    window.signInWithGoogle = async function() {
-      const btn = document.getElementById('googleSignInBtn');
-      if (btn) { btn.textContent = 'Redirecting to Google…'; btn.disabled = true; }
-      const provider = new firebase.auth.GoogleAuthProvider();
-      await auth.signInWithRedirect(provider);
-    };
-
     function launchApp(user) {
       window._currentUID = user.uid;
       window._currentUser = user;
@@ -135,34 +128,35 @@
       document.dispatchEvent(new Event('firebase-ready'));
     }
 
-    // MUST check getRedirectResult first — this resolves the pending 
-    // redirect auth BEFORE onAuthStateChanged fires, preventing the loop
-    auth.getRedirectResult().then(result => {
-      if (result && result.user) {
-        // Just came back from Google redirect — launch app immediately
-        launchApp(result.user);
-      } else {
-        // No pending redirect — check if already signed in
-        auth.onAuthStateChanged(user => {
-          const screen = document.getElementById('signInScreen');
-          if (user) {
-            launchApp(user);
-          } else {
-            if (screen) screen.style.display = 'flex';
-          }
-        });
-      }
-    }).catch(e => {
-      console.error('Redirect result error:', e);
-      // Fall through to normal auth state check
-      auth.onAuthStateChanged(user => {
-        const screen = document.getElementById('signInScreen');
-        if (user) {
-          launchApp(user);
-        } else {
-          if (screen) screen.style.display = 'flex';
+    window.signInWithGoogle = async function() {
+      const btn = document.getElementById('googleSignInBtn');
+      const errEl = document.getElementById('signInError');
+      if (btn) { btn.textContent = 'Opening Google…'; btn.disabled = true; }
+      try {
+        const provider = new firebase.auth.GoogleAuthProvider();
+        // Use popup — more reliable than redirect on GitHub Pages
+        const result = await auth.signInWithPopup(provider);
+        if (result.user) launchApp(result.user);
+      } catch(e) {
+        console.error('Sign-in error:', e);
+        if (btn) { btn.textContent = 'Sign in with Google'; btn.disabled = false; }
+        if (errEl) {
+          errEl.textContent = e.code === 'auth/popup-blocked'
+            ? 'Popup blocked — please allow popups for this site and try again'
+            : 'Sign-in failed: ' + (e.message || 'try again');
+          errEl.style.display = 'block';
         }
-      });
+      }
+    };
+
+    // Check if already signed in on load
+    auth.onAuthStateChanged(user => {
+      if (user) {
+        launchApp(user);
+      } else {
+        const screen = document.getElementById('signInScreen');
+        if (screen) screen.style.display = 'flex';
+      }
     });
 
     // Don't dispatch firebase-ready here — onAuthStateChanged handles it
