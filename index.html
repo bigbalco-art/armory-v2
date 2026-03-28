@@ -2096,23 +2096,30 @@ function viewPhoto(id) {
   img.style.cssText = 'max-width:90vw;max-height:72vh;border-radius:10px;object-fit:contain;display:block;box-shadow:0 8px 32px rgba(0,0,0,0.5);transition:transform 0.25s ease;';
   inner.appendChild(img);
 
-  // Capture a clean ImageBitmap at load time using Firebase SDK getBytes —
-  // this avoids all CORS issues since we never do a browser fetch()
+  // Load image via Firebase getDownloadURL then XHR as blob —
+  // XHR with Firebase token works even without CORS headers
   let _sourceBitmap = null;
-  const _entryId = id;
+  img.src = photoSrc; // show immediately while we load bitmap in background
   (async () => {
     try {
-      // Use Firebase Storage SDK to get raw bytes (bypasses CORS entirely)
-      const storageRef = firebase.storage().ref(`firearms/${_entryId}.jpg`);
-      const bytesArray = await storageRef.getBytes(5 * 1024 * 1024); // max 5MB
-      const blob = new Blob([bytesArray], { type: 'image/jpeg' });
-      _sourceBitmap = await createImageBitmap(blob);
-      // Set img src from object URL so it displays
-      img.src = URL.createObjectURL(blob);
+      // Re-get a fresh signed URL, then XHR it as a blob
+      // Firebase signed URLs include auth token so XHR works without CORS config
+      const storageRef = firebase.storage().ref(`firearms/${id}.jpg`);
+      const signedUrl = await storageRef.getDownloadURL();
+      const xhr = new XMLHttpRequest();
+      xhr.open('GET', signedUrl, true);
+      xhr.responseType = 'blob';
+      xhr.onload = async () => {
+        if (xhr.status === 200) {
+          try {
+            _sourceBitmap = await createImageBitmap(xhr.response);
+          } catch(e) { console.warn('createImageBitmap failed:', e.message); }
+        }
+      };
+      xhr.onerror = () => console.warn('XHR blob load failed');
+      xhr.send();
     } catch(e) {
-      // Fallback: just display the URL (rotation save won't work but viewing will)
-      console.warn('Bitmap capture failed, falling back to URL:', e.message);
-      img.src = photoSrc;
+      console.warn('Bitmap load failed:', e.message);
     }
   })();
 
@@ -2298,6 +2305,127 @@ function cancelNameEdit(id) {
 // ─── Name Confirm Modal ───────────────────────────────────────
 let _nameConfirmIdx = -1;
 let _nameConfirmNewName = "";
+
+// ─── AI Lookup Review Dialog ─────────────────────────────────
+// Shows all AI-found data side-by-side with current values
+// User picks what to keep — nothing is auto-saved
+function showLookupReview(idx, p) {
+  const entry = data[idx];
+  if (!entry) return;
+
+  const existing = document.getElementById('lookupReviewDlg');
+  if (existing) existing.remove();
+
+  const fields = [
+    { key: 'official_name', label: 'Name',         current: entry.name,         pKey: 'official_name' },
+    { key: 'manufacturer',  label: 'Manufacturer',  current: entry.manufacturer,  pKey: 'manufacturer'  },
+    { key: 'upc',           label: 'UPC',           current: entry.upc,           pKey: 'upc'           },
+    { key: 'mpn',           label: 'MPN',           current: entry.mpn,           pKey: 'mpn'           },
+    { key: 'caliber',       label: 'Caliber',       current: entry.caliber,       pKey: 'caliber'       },
+    { key: 'gunType',       label: 'Type',          current: entry.gunType,       pKey: 'gunType'       },
+    { key: 'description',   label: 'Description',   current: entry.description,   pKey: 'description'   },
+  ];
+
+  // Only show fields where AI returned something
+  const relevant = fields.filter(f => p[f.pKey] && p[f.pKey].toString().length > 0);
+  if (!relevant.length) { showToast('No new data found'); return; }
+
+  const dlg = document.createElement('div');
+  dlg.id = 'lookupReviewDlg';
+  dlg.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px;';
+
+  const box = document.createElement('div');
+  box.style.cssText = 'background:var(--surface);border-radius:14px;padding:24px;max-width:520px;width:100%;max-height:85vh;overflow-y:auto;box-shadow:0 8px 40px rgba(0,0,0,0.3);border-top:4px solid var(--accent2);';
+
+  box.innerHTML = `
+    <div style="font-size:16px;font-weight:700;color:var(--accent);margin-bottom:4px;">🔍 AI Lookup Results</div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:16px;">${escHtml(entry.name)} — check each field and choose what to keep</div>
+    <div style="display:grid;grid-template-columns:80px 1fr 1fr;gap:6px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:var(--muted);margin-bottom:8px;padding:0 4px;">
+      <div>Field</div><div>Your Value</div><div>AI Found</div>
+    </div>
+    <div id="lrRows"></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:20px;flex-wrap:wrap;">
+      <button id="lrKeepAll" style="padding:8px 14px;border-radius:6px;border:1px solid var(--border);background:none;color:var(--text);cursor:pointer;font-size:13px;">Keep Mine</button>
+      <button id="lrApplySelected" style="padding:8px 16px;border-radius:6px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:13px;font-weight:600;">Apply Selected ✓</button>
+    </div>`;
+
+  dlg.appendChild(box);
+  document.body.appendChild(dlg);
+
+  const rowsEl = box.querySelector('#lrRows');
+  const checkboxes = [];
+
+  relevant.forEach(f => {
+    const aiVal = p[f.pKey] || '';
+    const curVal = f.current || '';
+    const same = aiVal.toString().trim().toLowerCase() === curVal.toString().trim().toLowerCase();
+
+    const row = document.createElement('div');
+    row.style.cssText = `display:grid;grid-template-columns:80px 1fr 1fr;gap:6px;align-items:center;padding:6px 4px;border-radius:6px;margin-bottom:4px;background:${same ? 'transparent' : 'rgba(37,99,168,0.04)'};`;
+
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = !same && !!aiVal; // auto-check if AI found something different
+    cb.dataset.field = f.key;
+    cb.dataset.pkey = f.pKey;
+    cb.dataset.value = aiVal;
+    cb.style.cssText = 'width:16px;height:16px;accent-color:var(--accent);cursor:pointer;';
+    checkboxes.push(cb);
+
+    const labelEl = document.createElement('div');
+    labelEl.style.cssText = 'font-size:11px;font-weight:600;color:var(--muted);display:flex;align-items:center;gap:6px;';
+    labelEl.appendChild(cb);
+    labelEl.append(f.label);
+
+    const curEl = document.createElement('div');
+    curEl.style.cssText = 'font-size:12px;color:var(--text);font-family:monospace;word-break:break-all;';
+    curEl.textContent = curVal || '—';
+
+    const aiEl = document.createElement('div');
+    aiEl.style.cssText = `font-size:12px;font-family:monospace;word-break:break-all;font-weight:${same?'400':'600'};color:${same?'var(--muted)':'var(--accent2)'};`;
+    aiEl.textContent = aiVal || '—';
+
+    row.appendChild(labelEl);
+    row.appendChild(curEl);
+    row.appendChild(aiEl);
+    rowsEl.appendChild(row);
+  });
+
+  box.querySelector('#lrKeepAll').onclick = () => dlg.remove();
+
+  box.querySelector('#lrApplySelected').onclick = () => {
+    let applied = [];
+    checkboxes.forEach(cb => {
+      if (!cb.checked) return;
+      const field = cb.dataset.field;
+      const val = cb.dataset.value;
+      if (!val) return;
+      if (field === 'official_name') {
+        data[idx].name = val;
+        // update name display in table without full re-render
+        const nd = document.getElementById('namedisplay-' + entry.id);
+        const ni = document.getElementById('nameinput-' + entry.id);
+        if (nd) nd.textContent = val;
+        if (ni) ni.value = val;
+        applied.push('Name');
+      } else if (field === 'upc') {
+        data[idx].upc = val.replace(/[^0-9]/g, '');
+        applied.push('UPC');
+      } else {
+        data[idx][field] = val;
+        applied.push(field.charAt(0).toUpperCase() + field.slice(1));
+      }
+      if (field === 'caliber') addToCustomList('calibers', DEFAULT_CALIBERS, val);
+      if (field === 'gunType') addToCustomList('types', DEFAULT_GUN_TYPES, val);
+    });
+    saveAll();
+    filterTable();
+    dlg.remove();
+    showToast(applied.length ? '✅ Applied: ' + applied.join(', ') : 'Nothing selected');
+  };
+
+  dlg.onclick = e => { if (e.target === dlg) dlg.remove(); };
+}
 
 function showNameConfirm(oldName, newName, idx) {
   _nameConfirmIdx = idx;
@@ -3489,19 +3617,7 @@ manufacturer example: Glock, Smith & Wesson, Heckler & Koch, Colt`;
     try { p = JSON.parse(text.replace(/```json|```/g,'').trim()); } catch(e) {}
     const idx = data.findIndex(d=>d.id===id);
     if(idx < 0) return;
-    if(p.manufacturer) data[idx].manufacturer = p.manufacturer;
-    if(p.mpn) data[idx].mpn = p.mpn;
-    if(p.description) { data[idx].description = p.description; data[idx]._descVerified = true; }
-    if(p.gunType) data[idx].gunType = p.gunType;
-    if(p.caliber) data[idx].caliber = p.caliber;
-    saveAll();
-    filterTable();
-    // Always show name confirm if official name found
-    if(p.official_name && p.official_name.length > 3) {
-      showNameConfirm(entry.name, p.official_name, idx);
-    } else {
-      showToast("Lookup complete" + (p.manufacturer ? " — " + p.manufacturer : ""));
-    }
+    showLookupReview(idx, p);
   } catch(e) {
     console.error("UPC lookup error:", e.message);
     showToast("❌ " + (e.message||"Lookup failed").substring(0,60));
@@ -3525,20 +3641,7 @@ async function lookupByMPN(id, mpnVal) {
     try { p = JSON.parse(text.replace(/```json|```/g,'').trim()); } catch(e) {}
     const idx = data.findIndex(d=>d.id===id);
     if(idx < 0) return;
-    let updates = [];
-    if(p.upc && p.upc.replace(/[^0-9]/g,'').length >= 10 && !data[idx].upc) { data[idx].upc = p.upc.replace(/[^0-9]/g,''); updates.push('UPC'); }
-    if(p.manufacturer && !data[idx].manufacturer) { data[idx].manufacturer = p.manufacturer; updates.push('Mfr'); }
-    if(p.caliber && !data[idx].caliber) { data[idx].caliber = p.caliber; updates.push('Cal'); }
-    if(p.gunType && !data[idx].gunType) { data[idx].gunType = p.gunType; updates.push('Type'); }
-    if(p.description && !data[idx].description) { data[idx].description = p.description; updates.push('Desc'); }
-    if(p.caliber) addToCustomList('calibers', DEFAULT_CALIBERS, p.caliber);
-    if(p.gunType) addToCustomList('types', DEFAULT_GUN_TYPES, p.gunType);
-    saveAll(); filterTable();
-    if(p.official_name && p.official_name.length > 3) {
-      showNameConfirm(entry.name, p.official_name, idx);
-    } else {
-      showToast(updates.length ? updates.join(' · ') + ' filled ✓' : 'No new data found');
-    }
+    showLookupReview(idx, p);
   } catch(e) {
     showToast("❌ " + (e.message||"MPN lookup failed").substring(0,60));
   }
@@ -3576,25 +3679,8 @@ manufacturer example: Glock, Smith & Wesson, Heckler & Koch, Colt`;
     try { p = JSON.parse(text.replace(/```json|```/g,'').trim()); } catch(e) {}
     const idx = data.findIndex(d=>d.id===id);
     if(idx < 0) return;
-    if(p.upc && p.upc.replace(/[^0-9]/g,'').length >= 10) { data[idx].upc = p.upc.replace(/[^0-9]/g,''); data[idx]._upcVerified = true; }
-    if(p.mpn && !data[idx].mpn) data[idx].mpn = p.mpn;
-    if(p.manufacturer) data[idx].manufacturer = p.manufacturer;
-    if(p.description) { data[idx].description = p.description; data[idx]._descVerified = true; }
-    if(p.gunType) data[idx].gunType = p.gunType;
-    if(p.caliber) data[idx].caliber = p.caliber;
-    saveAll();
-    filterTable();
-    // Always show name confirm if official name found
-    if(p.official_name && p.official_name.length > 3) {
-      showNameConfirm(entry.name, p.official_name, idx);
-    } else {
-      let msg = [];
-      if(data[idx].upc) msg.push("UPC ✓");
-      if(data[idx].manufacturer) msg.push(data[idx].manufacturer);
-      if(data[idx].gunType) msg.push(data[idx].gunType);
-      if(data[idx].caliber) msg.push(data[idx].caliber);
-      showToast(msg.length ? msg.join(' · ') : 'Lookup complete');
-    }
+    // Show review dialog — let user decide what to keep
+    showLookupReview(idx, p);
   } catch(e) {
     console.error("AI lookup error:", e.message);
     showToast("❌ " + (e.message||"Lookup failed").substring(0,60));
@@ -4620,8 +4706,6 @@ async function riHandleFile(input) {
   document.getElementById('riPreviewImg3').src = compressed;
   riGoStep(2);
 
-  const key = getAnthropicKey();
-  if (!key) { showAnthropicKeySetup(() => riScanReceipt()); return; }
   await riScanReceipt();
 }
 
