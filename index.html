@@ -3879,7 +3879,8 @@ function openBarcodeScanner() {
   overlay.innerHTML = `
     <div class="scanner-box">
       <h3>📷 Scan Barcode</h3>
-      <p>Point your camera at the UPC barcode on the firearm box or manual. Keep steady and well-lit.</p>
+      <p>Point at the UPC/barcode on the box or manual. <strong>Hold steady</strong> — center the barcode in the box. Works best in good light.</p>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:8px;">Supports UPC-A, EAN-13, Code 128, QR</div>
       <div id="qr-reader"></div>
       <div style="display:flex;gap:10px;margin-top:14px;justify-content:flex-end;">
         <button class="btn btn-ghost" onclick="closeBarcodeScanner()">Cancel</button>
@@ -3887,28 +3888,40 @@ function openBarcodeScanner() {
     </div>`;
   document.body.appendChild(overlay);
 
-  // Start scanner
+  // Start scanner — explicitly include all 1D barcode formats for UPC/EAN
   _scanner = new Html5Qrcode("qr-reader");
+  const formats = [
+    Html5QrcodeSupportedFormats.EAN_13,   // standard UPC-A / EAN-13
+    Html5QrcodeSupportedFormats.EAN_8,
+    Html5QrcodeSupportedFormats.UPC_A,
+    Html5QrcodeSupportedFormats.UPC_E,
+    Html5QrcodeSupportedFormats.CODE_128, // some gun boxes use Code 128
+    Html5QrcodeSupportedFormats.CODE_39,
+    Html5QrcodeSupportedFormats.QR_CODE,  // keep QR support too
+  ];
   _scanner.start(
-    { facingMode: "environment" }, // use back camera
-    { fps: 10, qrbox: { width: 280, height: 120 } },
-    (decodedText) => {
-      // Success — barcode scanned
+    { facingMode: "environment" },
+    {
+      fps: 15,
+      qrbox: { width: 300, height: 150 }, // wider box for linear barcodes
+      formatsToSupport: formats,
+      experimentalFeatures: { useBarCodeDetectorIfSupported: true } // use native browser API when available (faster on Android)
+    },
+    (decodedText, decodedResult) => {
+      // Success
       closeBarcodeScanner();
+      const digits = decodedText.replace(/[^0-9]/g, '');
       const upcEl = document.getElementById('fUPC');
       if(upcEl) {
-        upcEl.value = decodedText.replace(/[^0-9]/g, '');
-        showToast('✅ Barcode scanned: ' + decodedText);
-        // Auto-trigger AI lookup
+        upcEl.value = digits;
+        showToast('✅ Scanned: ' + digits);
         manualLookup('upc');
       }
     },
-    (error) => {
-      // Scanning in progress — ignore frame errors
-    }
+    (error) => { /* frame errors are normal — ignore */ }
   ).catch(err => {
     closeBarcodeScanner();
-    showToast('❌ Camera error: ' + err);
+    showToast('❌ Camera error: ' + (err.message || err));
   });
 }
 
