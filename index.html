@@ -1276,7 +1276,11 @@
 
       <!-- AUDIT LOG -->
       <div class="form-group full" id="auditLogGroup" style="display:none;">
-        <label style="font-size:11px;color:var(--accent);letter-spacing:1px;">📋 CHANGE LOG</label>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
+          <label style="font-size:11px;color:var(--accent);letter-spacing:1px;">📋 CHANGE LOG</label>
+          <button class="btn btn-ghost" style="font-size:10px;padding:2px 8px;color:var(--red);border-color:var(--red);"
+            onclick="clearAuditLog()">🗑 Clear Log</button>
+        </div>
         <div class="audit-log" id="fAuditLog"></div>
       </div>
 
@@ -2015,38 +2019,23 @@ function getExifOrientation(file) {
   });
 }
 
-// Apply EXIF correction + optional 90° CCW rotation to put barrel left
-function applyExifAndRotation(ctx, orient, needsRotate, srcW, srcH, finalW, finalH) {
-  // EXIF transform matrix
-  const exifXforms = {
-    1: [1,0,0,1,0,0],
-    2: [-1,0,0,1,srcW,0],
-    3: [-1,0,0,-1,srcW,srcH],
-    4: [1,0,0,-1,0,srcH],
-    5: [0,1,1,0,0,0],
-    6: [0,1,-1,0,srcH,0],
-    7: [0,-1,-1,0,srcH,srcW],
-    8: [0,-1,1,0,0,srcW],
-  };
-  const rotated90 = orient >= 5 && orient <= 8;
-  // Scale from source space to canvas space
-  const scaleX = finalW / (rotated90 ? srcH : srcW);
-  const scaleY = finalH / (rotated90 ? srcW : srcH);
-
-  ctx.scale(scaleX, scaleY);
-  const [a,b,c,d,e,f] = exifXforms[orient] || [1,0,0,1,0,0];
-  ctx.transform(a,b,c,d,e,f);
-
-  // Additional 90° CCW rotation to force landscape (barrel left)
-  if (needsRotate) {
-    const corrW = rotated90 ? srcH : srcW;
-    const corrH = rotated90 ? srcW : srcH;
-    // Undo scale, rotate, rescale
-    ctx.scale(1/scaleX, 1/scaleY);
-    ctx.translate(0, finalW); // finalW = original corrH after rotation
-    ctx.rotate(-Math.PI / 2);
-    ctx.scale(finalW / corrH, finalH / corrW);
+// Draw image onto canvas with EXIF correction + landscape enforcement
+// Simple, reliable: one translate+rotate per transformation needed
+function drawOriented(ctx, img, orient, canvasW, canvasH) {
+  ctx.save();
+  // EXIF orientation corrections — standard mapping
+  switch(orient) {
+    case 2: ctx.transform(-1,0,0,1,canvasW,0); break;
+    case 3: ctx.transform(-1,0,0,-1,canvasW,canvasH); break;
+    case 4: ctx.transform(1,0,0,-1,0,canvasH); break;
+    case 5: ctx.transform(0,1,1,0,0,0); break;
+    case 6: ctx.transform(0,1,-1,0,canvasH,0); break;
+    case 7: ctx.transform(0,-1,-1,0,canvasW,canvasH); break; // was canvasH,canvasW
+    case 8: ctx.transform(0,-1,1,0,0,canvasW); break;
+    default: break; // orient 1 = normal
   }
+  ctx.drawImage(img, 0, 0);
+  ctx.restore();
 }
 
 async function handlePhotoUpload(id, input) {
@@ -2064,33 +2053,59 @@ async function handlePhotoUpload(id, input) {
     const img = new Image();
     img.onload = function() {
       const MAX = 800;
-      // Correct for EXIF rotation first
-      const rotated90 = exifOrient >= 5 && exifOrient <= 8;
-      let srcW = img.width, srcH = img.height;
-      // After EXIF correction, swap dims if phone was held portrait
-      let corrW = rotated90 ? srcH : srcW;
-      let corrH = rotated90 ? srcW : srcH;
+      const orient = exifOrient || 1;
+      // For EXIF 5-8 the sensor was rotated 90°, so natural dims are swapped
+      const swapped = orient >= 5 && orient <= 8;
+      // "Corrected" dimensions = what the image looks like right-side-up
+      const corrW = swapped ? img.height : img.width;
+      const corrH = swapped ? img.width  : img.height;
 
-      // If still portrait after EXIF correction, rotate 90° CCW
-      // so barrel faces left (landscape, wider than tall)
-      const needsRotate = corrH > corrW;
-      const outW = needsRotate ? corrH : corrW;
-      const outH = needsRotate ? corrW : corrH;
+      // Force landscape: if portrait after correction, rotate 90° CCW
+      // This puts the barrel on the left and grip on the right
+      const forceLandscape = corrH > corrW;
+      // Final output dimensions
+      let outW = forceLandscape ? corrH : corrW;
+      let outH = forceLandscape ? corrW : corrH;
 
-      // Scale to MAX on longest side
-      let finalW = outW, finalH = outH;
-      if(finalW > MAX) { finalH = Math.round(finalH * MAX / finalW); finalW = MAX; }
-      if(finalH > MAX) { finalW = Math.round(finalW * MAX / finalH); finalH = MAX; }
+      // Scale down to MAX on longest side
+      if(outW > MAX) { outH = Math.round(outH * MAX / outW); outW = MAX; }
+      if(outH > MAX) { outW = Math.round(outW * MAX / outH); outH = MAX; }
 
       const canvas = document.createElement('canvas');
-      canvas.width = finalW;
-      canvas.height = finalH;
+      canvas.width  = outW;
+      canvas.height = outH;
       const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#000'; // explicit background prevents transparency artifacts
+      ctx.fillRect(0, 0, outW, outH);
 
-      ctx.save();
-      applyExifAndRotation(ctx, exifOrient, needsRotate, srcW, srcH, finalW, finalH);
-      ctx.drawImage(img, 0, 0);
-      ctx.restore();
+      if (forceLandscape) {
+        // Rotate 90° CCW on top of EXIF correction:
+        // translate to new origin, rotate, then draw with EXIF fix
+        // Build a temp canvas with the EXIF-corrected (portrait) image first
+        const tmpW = corrW > 1600 ? 1600 : corrW;
+        const tmpH = Math.round(corrH * tmpW / corrW);
+        const tmp = document.createElement('canvas');
+        tmp.width  = swapped ? tmpH : tmpW; // raw canvas dims match sensor orientation
+        tmp.height = swapped ? tmpW : tmpH;
+        const tctx = tmp.getContext('2d');
+        drawOriented(tctx, img, orient, tmp.width, tmp.height);
+
+        // Now rotate that corrected portrait image 90° CCW onto final canvas
+        ctx.save();
+        ctx.translate(0, outH);
+        ctx.rotate(-Math.PI / 2);
+        ctx.drawImage(tmp, 0, 0, tmpW, tmpH, 0, 0, outH, outW);
+        ctx.restore();
+      } else {
+        // No landscape rotation needed — just apply EXIF correction
+        const rawW = swapped ? img.height : img.width;
+        const rawH = swapped ? img.width  : img.height;
+        const tmpCanvas = document.createElement('canvas');
+        tmpCanvas.width  = img.width;
+        tmpCanvas.height = img.height;
+        drawOriented(tmpCanvas.getContext('2d'), img, orient, img.width, img.height);
+        ctx.drawImage(tmpCanvas, 0, 0, outW, outH);
+      }
 
       canvas.toBlob(async (blob) => {
         try {
@@ -2134,20 +2149,53 @@ function viewPhoto(id) {
   const entry = data.find(d=>d.id===id);
   if(!entry || (!entry.photo && !entry.photoUrl)) return;
   const photoSrc = entry.photo || entry.photoUrl;
-  const overlay = document.createElement('div');
-  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:9999;display:flex;align-items:center;justify-content:center;cursor:pointer;';
-  overlay.innerHTML = `<div style="position:relative;max-width:90vw;max-height:90vh;">
-    <img src="${photoSrc}" style="max-width:90vw;max-height:85vh;border-radius:8px;object-fit:contain;">
-    <div style="text-align:center;color:#fff;margin-top:10px;font-size:14px;">${entry.name} — Click anywhere to close</div>
-    <button onclick="event.stopPropagation();removePhoto(${id});document.body.removeChild(this.closest('[style*=fixed]'));" style="position:absolute;top:-10px;right:-10px;background:#c0392b;color:#fff;border:none;border-radius:50%;width:28px;height:28px;cursor:pointer;font-size:16px;">×</button>
-  </div>`;
-  overlay.onclick = () => document.body.removeChild(overlay);
-  document.body.appendChild(overlay);
+  const ov = document.createElement('div');
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.88);z-index:9999;display:flex;align-items:center;justify-content:center;';
+  ov.onclick = () => document.body.removeChild(ov);
+  ov.innerHTML = `
+    <div style="position:relative;max-width:94vw;max-height:94vh;display:flex;flex-direction:column;align-items:center;" onclick="event.stopPropagation()">
+      <img src="${photoSrc}" style="max-width:90vw;max-height:78vh;border-radius:10px;object-fit:contain;display:block;box-shadow:0 8px 32px rgba(0,0,0,0.5);">
+      <div style="display:flex;align-items:center;justify-content:space-between;width:100%;margin-top:12px;gap:8px;flex-wrap:wrap;">
+        <div style="color:rgba(255,255,255,0.75);font-size:13px;">${escHtml(entry.name)}</div>
+        <div style="display:flex;gap:8px;">
+          <label style="padding:7px 14px;background:rgba(255,255,255,0.12);border:1px solid rgba(255,255,255,0.25);color:#fff;border-radius:7px;cursor:pointer;font-size:12px;display:inline-flex;align-items:center;gap:5px;" title="Upload a replacement photo">
+            🔄 Replace
+            <input type="file" accept="image/*" style="display:none"
+              onchange="document.body.removeChild(document.getElementById('photoOverlay'));handlePhotoUpload(${id},this);">
+          </label>
+          <button onclick="if(confirm('Delete this photo?')){removePhoto(${id});document.body.removeChild(document.getElementById('photoOverlay'));}"
+            style="padding:7px 14px;background:#c0392b;color:#fff;border:none;border-radius:7px;cursor:pointer;font-size:12px;">
+            🗑️ Delete
+          </button>
+          <button onclick="document.body.removeChild(document.getElementById('photoOverlay'));"
+            style="padding:7px 14px;background:rgba(255,255,255,0.12);border:1px solid rgba(255,255,255,0.25);color:#fff;border-radius:7px;cursor:pointer;font-size:12px;">
+            ✕ Close
+          </button>
+        </div>
+      </div>
+    </div>`;
+  ov.id = 'photoOverlay';
+  document.body.appendChild(ov);
 }
 
-function removePhoto(id) {
+async function removePhoto(id) {
   const entry = data.find(d=>d.id===id);
-  if(entry) { entry.photo = ''; saveAll(); filterTable(); showToast("Photo removed"); }
+  if(!entry) return;
+  // Delete from Firebase Storage if cloud URL exists
+  if(entry.photoUrl) {
+    try {
+      const storageRef = firebase.storage().refFromURL(entry.photoUrl);
+      await storageRef.delete();
+    } catch(e) {
+      console.warn('Could not delete from Storage (may already be gone):', e.message);
+    }
+  }
+  entry.photo = '';
+  entry.photoUrl = '';
+  entry.needPic = true;
+  saveAll();
+  filterTable();
+  showToast('🗑️ Photo removed');
 }
 
 // ─── Inline Name Edit ────────────────────────────────────────
@@ -3057,10 +3105,12 @@ const CALIBER_COLORS = {
 
 function caliberPill(cal) {
   if(!cal) return '<span style="color:var(--muted);font-size:12px;">—</span>';
-  const key = cal.toLowerCase().trim();
+  // Normalize: lowercase + strip spaces so ".45 ACP" and ".45acp" both match
+  const key = cal.toLowerCase().trim().replace(/\s+/g, '');
   let style = null;
   for(const [k,v] of Object.entries(CALIBER_COLORS)) {
-    if(key.includes(k)) { style = v; break; }
+    const normK = k.toLowerCase().replace(/\s+/g, '');
+    if(key.includes(normK)) { style = v; break; }
   }
   if(style) {
     return `<span class="cal-pill" style="background:${style.bg};color:${style.color};">${escHtml(cal)}</span>`;
@@ -3259,7 +3309,11 @@ function openEditModal(id) {
   const auditLog = document.getElementById('fAuditLog');
   if(d.auditLog && d.auditLog.length && auditGroup && auditLog) {
     auditGroup.style.display = '';
-    auditLog.innerHTML = d.auditLog.map(e => `<div class="audit-entry">${escHtml(e)}</div>`).join('');
+    auditLog.innerHTML = d.auditLog.map(e => {
+      if(typeof e === 'string') return `<div class="audit-entry">${escHtml(e)}</div>`;
+      const ts = e.ts ? new Date(e.ts).toLocaleDateString() : '';
+      return `<div class="audit-entry"><span style="color:var(--muted);font-size:10px;">${ts}</span> ${escHtml(e.note||e.msg||JSON.stringify(e))}</div>`;
+    }).join('');
   } else if(auditGroup) {
     auditGroup.style.display = 'none';
   }
@@ -3612,6 +3666,18 @@ function togglePrivacy() {
 }
 
 // ─── Audit Trail ─────────────────────────────────────────────
+function clearAuditLog() {
+  if(!_editingId) return;
+  if(!confirm('Clear the change log for this entry?')) return;
+  const entry = data.find(d=>d.id===_editingId);
+  if(entry) {
+    entry.auditLog = [];
+    document.getElementById('fAuditLog').innerHTML = '';
+    saveAll();
+    showToast('Change log cleared');
+  }
+}
+
 function logChange(entry, field, oldVal, newVal) {
   if(!entry) return;
   if(!entry.auditLog) entry.auditLog = [];
