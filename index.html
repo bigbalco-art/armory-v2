@@ -2363,6 +2363,10 @@ function showLookupReview(idx, p) {
   box.innerHTML = `
     <div style="font-size:16px;font-weight:700;color:var(--accent);margin-bottom:4px;">🔍 AI Lookup Results</div>
     <div style="font-size:12px;color:var(--muted);margin-bottom:16px;">${escHtml(entry.name)} — check each field and choose what to keep</div>
+    <div style="display:flex;gap:10px;margin-bottom:10px;flex-wrap:wrap;">
+      <span style="font-size:11px;padding:2px 8px;border-radius:4px;background:rgba(22,163,74,0.1);color:#16a34a;">🟢 Empty — safe to fill</span>
+      <span style="font-size:11px;padding:2px 8px;border-radius:4px;background:rgba(245,158,11,0.1);color:#d97706;">🟡 Has data — review carefully</span>
+    </div>
     <div style="display:grid;grid-template-columns:80px 1fr 1fr;gap:6px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:var(--muted);margin-bottom:8px;padding:0 4px;">
       <div>Field</div><div>Your Value</div><div>AI Found</div>
     </div>
@@ -2384,11 +2388,16 @@ function showLookupReview(idx, p) {
     const same = aiVal.toString().trim().toLowerCase() === curVal.toString().trim().toLowerCase();
 
     const row = document.createElement('div');
-    row.style.cssText = `display:grid;grid-template-columns:80px 1fr 1fr;gap:6px;align-items:center;padding:6px 4px;border-radius:6px;margin-bottom:4px;background:${same ? 'transparent' : 'rgba(37,99,168,0.04)'};`;
+    // Color code: green=empty field (safe to fill), orange=conflict (has data, AI differs), transparent=same
+    const rowBg = same ? 'transparent' : !curVal ? 'rgba(22,163,74,0.06)' : 'rgba(245,158,11,0.07)';
+    row.style.cssText = `display:grid;grid-template-columns:80px 1fr 1fr;gap:6px;align-items:center;padding:6px 4px;border-radius:6px;margin-bottom:4px;background:${rowBg};`;
 
     const cb = document.createElement('input');
     cb.type = 'checkbox';
-    cb.checked = !same && !!aiVal; // auto-check if AI found something different
+    // Auto-check ONLY if current field is empty — never auto-overwrite existing data
+    cb.checked = !curVal && !!aiVal;
+    // If field already has data, mark it visually so user knows
+    if (curVal && aiVal && !same) cb.indeterminate = false; // show unchecked but highlighted
     cb.dataset.field = f.key;
     cb.dataset.pkey = f.pKey;
     cb.dataset.value = aiVal;
@@ -4015,6 +4024,10 @@ function showLabelReview(p) {
   header.innerHTML = `
     <div style="font-size:16px;font-weight:700;color:var(--accent);margin-bottom:3px;">📋 Label Scan Results</div>
     <div style="font-size:12px;color:var(--muted);margin-bottom:14px;">Confidence: <strong style="color:${p.confidence==='high'?'var(--green)':p.confidence==='medium'?'#f59e0b':'var(--red)'}">${p.confidence||'unknown'}</strong>${p.notes ? ' — ' + escHtml(p.notes) : ''}</div>
+    <div style="display:flex;gap:10px;margin-bottom:8px;flex-wrap:wrap;">
+      <span style="font-size:11px;padding:2px 8px;border-radius:4px;background:rgba(22,163,74,0.1);color:#16a34a;">🟢 Empty — safe to fill</span>
+      <span style="font-size:11px;padding:2px 8px;border-radius:4px;background:rgba(245,158,11,0.1);color:#d97706;">🟡 Has data — review carefully</span>
+    </div>
     <div style="display:grid;grid-template-columns:90px 1fr 1fr;gap:5px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:var(--muted);padding:0 4px;margin-bottom:6px;">
       <div>Field</div><div>Current</div><div>Scanned</div>
     </div>`;
@@ -4029,11 +4042,14 @@ function showLabelReview(p) {
     const same = newVal.toLowerCase() === curVal.toLowerCase();
 
     const row = document.createElement('div');
-    row.style.cssText = `display:grid;grid-template-columns:90px 1fr 1fr;gap:5px;align-items:center;padding:7px 4px;border-radius:6px;margin-bottom:3px;background:${same?'transparent':'rgba(37,99,168,0.05)'};`;
+    // Green = empty field safe to fill, orange = already has data AI disagrees with, transparent = same
+    const rowBg = same ? 'transparent' : !curVal ? 'rgba(22,163,74,0.06)' : 'rgba(245,158,11,0.07)';
+    row.style.cssText = `display:grid;grid-template-columns:90px 1fr 1fr;gap:5px;align-items:center;padding:7px 4px;border-radius:6px;margin-bottom:3px;background:${rowBg};`;
 
     const cb = document.createElement('input');
     cb.type = 'checkbox';
-    cb.checked = !same && !!newVal;
+    // Auto-check ONLY if current field is empty — never auto-overwrite existing data
+    cb.checked = !curVal && !!newVal;
     cb.dataset.elId = f.elId;
     cb.dataset.value = newVal;
     cb.style.cssText = 'width:15px;height:15px;accent-color:var(--accent);cursor:pointer;';
@@ -5117,12 +5133,18 @@ function riLoadCurrentFirearm() {
   const counterEl = document.getElementById('riFirearmCounter');
   if (counterEl) counterEl.textContent = total > 1 ? `Firearm ${_riCurrentIndex + 1} of ${total}` : '';
 
-  document.getElementById('riName').value = f.name || '';
-  document.getElementById('riManufacturer').value = f.manufacturer || '';
-  document.getElementById('riSerial').value = f.serial || '';
-  document.getElementById('riUPC').value = f.upc || '';
-  document.getElementById('riMPN').value = f.mpn || '';
-  document.getElementById('riCaliber').value = f.caliber || '';
+  // Only fill fields that are empty — don't overwrite data user already entered
+  const _setIfEmpty = (id, val) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (!el.value && val) { el.value = val; }
+  };
+  _setIfEmpty('riName', f.name);
+  _setIfEmpty('riManufacturer', f.manufacturer);
+  _setIfEmpty('riSerial', f.serial);
+  _setIfEmpty('riUPC', f.upc);
+  _setIfEmpty('riMPN', f.mpn);
+  _setIfEmpty('riCaliber', f.caliber);
   riApplyReceiptType(f.receiptType || 'purchase', f);
 
   const confMap = { riName:'name', riManufacturer:'manufacturer', riSerial:'serial', riUPC:'upc', riMPN:'mpn', riCaliber:'caliber', riPrice:'price', riFflFee:'price' };
