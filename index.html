@@ -2093,9 +2093,28 @@ function viewPhoto(id) {
 
   // Photo — rotation applied via CSS transform
   const img = document.createElement('img');
-  img.src = photoSrc;
   img.style.cssText = 'max-width:90vw;max-height:72vh;border-radius:10px;object-fit:contain;display:block;box-shadow:0 8px 32px rgba(0,0,0,0.5);transition:transform 0.25s ease;';
   inner.appendChild(img);
+
+  // Capture a clean ImageBitmap at load time using Firebase SDK getBytes —
+  // this avoids all CORS issues since we never do a browser fetch()
+  let _sourceBitmap = null;
+  const _entryId = id;
+  (async () => {
+    try {
+      // Use Firebase Storage SDK to get raw bytes (bypasses CORS entirely)
+      const storageRef = firebase.storage().ref(`firearms/${_entryId}.jpg`);
+      const bytesArray = await storageRef.getBytes(5 * 1024 * 1024); // max 5MB
+      const blob = new Blob([bytesArray], { type: 'image/jpeg' });
+      _sourceBitmap = await createImageBitmap(blob);
+      // Set img src from object URL so it displays
+      img.src = URL.createObjectURL(blob);
+    } catch(e) {
+      // Fallback: just display the URL (rotation save won't work but viewing will)
+      console.warn('Bitmap capture failed, falling back to URL:', e.message);
+      img.src = photoSrc;
+    }
+  })();
 
   // Button bar
   const bar = document.createElement('div');
@@ -2141,16 +2160,14 @@ function viewPhoto(id) {
     saveRotBtn.disabled = true;
     saveRotBtn.textContent = 'Saving…';
     try {
-      // Fetch image as blob to get around CORS canvas taint on Firebase URLs
-      // (img.naturalWidth is 0 for cross-origin images even when displayed fine)
-      const fetchResp = await fetch(photoSrc);
-      const imgBlob = await fetchResp.blob();
-      const objURL = URL.createObjectURL(imgBlob);
-      const cleanImg = await createImageBitmap(new Blob([await imgBlob.arrayBuffer()], {type: imgBlob.type}));
-
+      if (!_sourceBitmap) {
+        showToast('⏳ Image still loading — try again in a moment');
+        saveRotBtn.disabled = false; saveRotBtn.innerHTML = '💾 Save';
+        return;
+      }
       const rad = (currentRotation * Math.PI) / 180;
       const sin = Math.abs(Math.sin(rad)), cos = Math.abs(Math.cos(rad));
-      const nw = cleanImg.width, nh = cleanImg.height;
+      const nw = _sourceBitmap.width, nh = _sourceBitmap.height;
       const cw = Math.round(nw * cos + nh * sin);
       const ch = Math.round(nw * sin + nh * cos);
       const canvas = document.createElement('canvas');
@@ -2160,9 +2177,7 @@ function viewPhoto(id) {
       ctx.fillRect(0, 0, cw, ch);
       ctx.translate(cw / 2, ch / 2);
       ctx.rotate(rad);
-      ctx.drawImage(cleanImg, -nw / 2, -nh / 2);
-      cleanImg.close();
-      URL.revokeObjectURL(objURL);
+      ctx.drawImage(_sourceBitmap, -nw / 2, -nh / 2);
       canvas.toBlob(async blob => {
         try {
           const storageRef = firebase.storage().ref(`firearms/${id}.jpg`);
@@ -2179,7 +2194,8 @@ function viewPhoto(id) {
           showToast('✅ Rotation saved');
           currentRotation = 0;
           img.style.transform = 'rotate(0deg)';
-          img.src = url + (url.includes('?') ? '&' : '?') + 'nocache=' + Date.now();
+          _sourceBitmap.close();
+          _sourceBitmap = null;
         } catch(e) { showToast('❌ Save failed: ' + e.message.substring(0, 50)); }
         finally { saveRotBtn.disabled = false; saveRotBtn.innerHTML = '💾 Save'; }
       }, 'image/jpeg', 0.88);
@@ -4631,47 +4647,8 @@ function riCompressImage(file, maxDim, quality) {
 }
 
 // ─── Anthropic Key helpers ─────────────────────────────────────
-function getAnthropicKey() {
-  return localStorage.getItem('armory_anthropic_key') || '';
-}
-function showAnthropicKeySetup(onSuccess) {
-  const existing = getAnthropicKey();
-  const old = document.getElementById('anthropicKeyDlg');
-  if (old) old.remove();
-  const dlg = document.createElement('div');
-  dlg.id = 'anthropicKeyDlg';
-  dlg.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:9999;display:flex;align-items:center;justify-content:center;';
-  dlg.innerHTML = `
-    <div style="background:var(--surface);border-radius:14px;padding:28px 28px 24px;max-width:420px;width:92%;box-shadow:0 8px 40px rgba(0,0,0,0.25);border-top:4px solid #7c3aed;">
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
-        <span style="font-size:22px;">📄</span>
-        <div style="font-size:17px;font-weight:700;color:#7c3aed;">Receipt Scanner — API Key</div>
-      </div>
-      <div style="color:var(--muted);font-size:13px;margin-bottom:18px;line-height:1.6;">
-        ${existing ? 'Your Anthropic key is saved. Update or clear it below.' : 'Receipt scanning uses Claude Vision. Enter your Anthropic API key to continue.<br><a href="https://console.anthropic.com/settings/keys" target="_blank" style="color:#7c3aed;">console.anthropic.com → API Keys</a>'}
-      </div>
-      <input id="anthropicKeyInput" type="password" placeholder="Paste key (sk-ant-...)"
-        style="width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;font-family:monospace;margin-bottom:16px;background:var(--bg);color:var(--text);box-sizing:border-box;"
-        value="${existing}">
-      <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">
-        ${existing ? '<button id="anthKeyClear" style="padding:8px 14px;border-radius:6px;border:1px solid var(--red);background:none;color:var(--red);cursor:pointer;font-size:13px;">Clear Key</button>' : ''}
-        <button id="anthKeyCancel" style="padding:8px 14px;border-radius:6px;border:1px solid var(--border);background:none;color:var(--text);cursor:pointer;font-size:13px;">Cancel</button>
-        <button id="anthKeySave" style="padding:8px 16px;border-radius:6px;border:none;background:#7c3aed;color:#fff;cursor:pointer;font-size:13px;font-weight:600;">Save & Scan</button>
-      </div>
-    </div>`;
-  document.body.appendChild(dlg);
-  dlg.querySelector('#anthKeySave').onclick = () => {
-    const val = dlg.querySelector('#anthropicKeyInput').value.trim();
-    if (!val || !val.startsWith('sk-ant-')) { showToast('Please paste a valid Anthropic key (starts with sk-ant-)'); return; }
-    localStorage.setItem('armory_anthropic_key', val);
-    dlg.remove();
-    showToast('✅ Key saved — scanning receipt…');
-    if (onSuccess) onSuccess();
-  };
-  dlg.querySelector('#anthKeyCancel').onclick = () => dlg.remove();
-  const clearBtn = dlg.querySelector('#anthKeyClear');
-  if (clearBtn) clearBtn.onclick = () => { localStorage.removeItem('armory_anthropic_key'); dlg.remove(); showToast('Key cleared'); };
-}
+// ─── Receipt scanner uses Gemini (same key as AI Lookup — free tier) ──
+// No separate key needed — reuses armory_gemini_key already saved in the app
 
 // ─── State ─────────────────────────────────────────────────────
 let _riFirearms = [];
@@ -4691,12 +4668,18 @@ function detectMediaType(b64) {
 }
 
 async function riScanReceipt() {
-  const anthropicKey = getAnthropicKey();
-  if (!anthropicKey) { showAnthropicKeySetup(() => riScanReceipt()); return; }
+  // Uses the same Gemini key already saved for AI Lookup — free tier, no extra cost
+  const geminiKey = localStorage.getItem('armory_gemini_key') || '';
+  if (!geminiKey) {
+    showKeySetup(true); // reuse existing Gemini key setup dialog
+    showToast('⚠ Set your Gemini API key first (⚙️ button)');
+    closeReceiptImport();
+    return;
+  }
 
   const statusEl = document.getElementById('riScanStatus');
   document.getElementById('riRawText').style.display = 'none';
-  statusEl.innerHTML = '<span class="ri-spinner"></span>Analyzing receipt with Claude Vision…';
+  statusEl.innerHTML = '<span class="ri-spinner"></span>Analyzing receipt with Gemini Vision…';
 
   try {
     const prompt = `You are an FFL receipt expert. This receipt may contain ONE or MULTIPLE firearms.
@@ -4727,42 +4710,30 @@ Return ONLY raw JSON — no markdown, no backticks:
     }
   ],
   "fflDealerName": "FFL dealer name if visible",
-  "rawText": "Most relevant 50 words from receipt"
+  "rawText": "Most relevant 50 words from receipt",
+  "fieldConfidence": { "name":"high/medium/low", "manufacturer":"high/medium/low", "serial":"high/medium/low", "upc":"high/medium/low", "mpn":"high/medium/low", "caliber":"high/medium/low", "price":"high/medium/low" }
 }
 
-Single firearm = still use the array with one item. Use "" for any field not visible. NEVER fabricate serial numbers.
+Single firearm = still use the array with one item. Use "" for any field not visible. NEVER fabricate serial numbers.`;
 
-Also add a top-level "fieldConfidence" object rating confidence for each field across all firearms:
-"fieldConfidence": { "name":"high/medium/low", "manufacturer":"high/medium/low", "serial":"high/medium/low", "upc":"high/medium/low", "mpn":"high/medium/low", "caliber":"high/medium/low", "price":"high/medium/low" }`;
-
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
+    const mediaType = detectMediaType(_riImageBase64);
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`;
+    const response = await fetch(url, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': anthropicKey,
-        'anthropic-version': '2023-06-01',
-        'anthropic-dangerous-direct-browser-access': 'true'
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 1500,
-        messages: [{ role: 'user', content: [
-          { type: 'image', source: { type: 'base64', media_type: detectMediaType(_riImageBase64), data: _riImageBase64 } },
-          { type: 'text', text: prompt }
-        ]}]
+        contents: [{ parts: [
+          { inline_data: { mime_type: mediaType, data: _riImageBase64 } },
+          { text: prompt }
+        ]}],
+        generationConfig: { responseMimeType: 'application/json', temperature: 0.1 }
       })
     });
 
     const responseData = await response.json();
-    if (responseData.error) {
-      if (responseData.error.type === 'authentication_error') {
-        localStorage.removeItem('armory_anthropic_key');
-        throw new Error('Invalid API key — please re-enter your Anthropic key');
-      }
-      throw new Error(responseData.error.message || 'API error');
-    }
+    if (responseData.error) throw new Error(responseData.error.message || 'Gemini API error');
 
-    const text = (responseData.content || []).map(b => b.text || '').join('');
+    const text = responseData.candidates?.[0]?.content?.parts?.[0]?.text || '';
     let parsed = {};
     try {
       const clean = text.replace(/```json|```/g, '').trim();
