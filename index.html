@@ -27,34 +27,76 @@
     if(typeof firebase === 'undefined') throw new Error('Firebase SDK not loaded');
     firebase.initializeApp(firebaseConfig);
     const db = firebase.firestore();
-    const DOC_REF = db.collection("armory").doc("inventory");
+    // ─── Per-document Firestore (scalable, no 1MB limit) ──────────
+    // Each firearm = its own doc in armory/inventory/items/{id}
+    // Falls back gracefully if old single-doc data exists on first run
+    const COL_REF  = db.collection("armory").doc("inventory").collection("items");
+    const META_REF = db.collection("armory").doc("inventory");
 
     window._fbSave = async function(dataArr) {
       try {
-        // Strip photos before saving to Firebase (too large for Firestore 1MB limit)
-        // Photos are kept in localStorage only
-        const dataNoPhotos = dataArr.map(d => {
-          const copy = Object.assign({}, d);
-          if(copy.photo && copy.photo.length > 1000) delete copy.photo;
-          return copy;
+        const batch = db.batch();
+        const strip = d => {
+          const c = Object.assign({}, d);
+          // Never store base64 photos in Firestore
+          if (c.photo && c.photo.length > 500) delete c.photo;
+          return c;
+        };
+        dataArr.forEach(d => {
+          const ref = COL_REF.doc(String(d.id));
+          batch.set(ref, strip(d));
         });
-        await DOC_REF.set({ data: dataNoPhotos, updated: new Date().toISOString() });
+        // Write metadata (count + timestamp) to parent doc for quick checks
+        batch.set(META_REF, { count: dataArr.length, updated: new Date().toISOString() }, { merge: true });
+        await batch.commit();
         return true;
       } catch(e) {
         console.error("Firebase save error:", e);
+        // Batch limit is 500 writes — split if needed
+        if(e.code === 'resource-exhausted' || (e.message||'').includes('500')) {
+          try {
+            for(let i = 0; i < dataArr.length; i += 400) {
+              const chunk = dataArr.slice(i, i + 400);
+              const b2 = db.batch();
+              const strip = d => { const c = Object.assign({}, d); if(c.photo && c.photo.length > 500) delete c.photo; return c; };
+              chunk.forEach(d => b2.set(COL_REF.doc(String(d.id)), strip(d)));
+              await b2.commit();
+            }
+            return true;
+          } catch(e2) { console.error("Chunked save error:", e2); return false; }
+        }
         return false;
       }
     };
 
+    window._fbDelete = async function(entryId) {
+      try { await COL_REF.doc(String(entryId)).delete(); return true; }
+      catch(e) { console.error("Firebase delete error:", e); return false; }
+    };
+
     window._fbLoad = async function() {
       try {
-        const snap = await DOC_REF.get();
-        if(snap.exists) {
-          const d = snap.data();
-          console.log("Firebase loaded, entry count:", (d.data||[]).length);
-          return d.data || [];
+        // Try new per-document collection first
+        const snap = await COL_REF.get();
+        if (!snap.empty) {
+          const docs = snap.docs.map(d => d.data());
+          console.log("Firebase loaded (per-doc), count:", docs.length);
+          return docs;
         }
-        console.log("Firebase doc does not exist");
+        // Fall back to old single-doc format for migration
+        const oldSnap = await META_REF.get();
+        if (oldSnap.exists && oldSnap.data().data) {
+          console.log("Migrating from single-doc format…");
+          const oldData = oldSnap.data().data || [];
+          // Migrate old data to new per-doc format silently
+          if (oldData.length > 0) {
+            window._fbSave(oldData).then(() => {
+              console.log("Migration to per-doc complete.");
+            });
+          }
+          return oldData;
+        }
+        console.log("No Firebase data found");
         return null;
       } catch(e) {
         console.error("Firebase load error:", e);
@@ -63,8 +105,10 @@
     };
 
     window._fbListen = function(callback) {
-      return DOC_REF.onSnapshot((snap) => {
-        if(snap.exists && !window._syncPaused) callback(snap.data().data || []);
+      return COL_REF.onSnapshot(snap => {
+        if (window._syncPaused) return;
+        const docs = snap.docs.map(d => d.data());
+        if (docs.length > 0) callback(docs);
       });
     };
 
@@ -558,6 +602,10 @@
   .thumb-cell { width: 64px; text-align: center; }
   .thumb-img { width:56px; height:44px; object-fit:cover; border-radius:5px; border:1px solid var(--border); display:block; cursor:pointer; }
   .thumb-placeholder { width:56px; height:44px; border:2px dashed var(--border); border-radius:5px; display:flex; align-items:center; justify-content:center; cursor:pointer; color:var(--muted); font-size:18px; transition:border-color 0.15s; }
+  .photo-cloud-badge { display:block; font-size:9px; text-align:center; margin-top:2px; line-height:1; }
+  .cloud-yes { color:#16a34a; }   /* green — on Firebase */
+  .cloud-local { color:#6b7280; } /* grey — local only */
+  .cloud-none { color:#d1d5db; }  /* no photo */
   .thumb-placeholder:hover { border-color:var(--accent2); color:var(--accent2); }
   .serial-input { font-family:'JetBrains Mono',monospace; font-size:12px; filter:blur(5px); transition:filter 0.2s; width:120px; }
   .serial-input:focus, .serial-input:hover { filter:blur(0); }
@@ -1228,7 +1276,11 @@
 
       <!-- AUDIT LOG -->
       <div class="form-group full" id="auditLogGroup" style="display:none;">
-        <label style="font-size:11px;color:var(--accent);letter-spacing:1px;">📋 CHANGE LOG</label>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
+          <label style="font-size:11px;color:var(--accent);letter-spacing:1px;">📋 CHANGE LOG</label>
+          <button class="btn btn-ghost" style="font-size:10px;padding:2px 8px;color:var(--red);border-color:var(--red);"
+            onclick="clearAuditLog()">🗑 Clear Log</button>
+        </div>
         <div class="audit-log" id="fAuditLog"></div>
       </div>
 
@@ -1937,6 +1989,18 @@ function triggerPhotoUpload(id) {
   if(input) input.click();
 }
 
+// ─── Photo orientation helper ────────────────────────────────
+// Uses browser-native EXIF handling via createImageBitmap — no matrix math
+async function getOrientedBitmap(file) {
+  try {
+    // imageOrientation:'from-image' tells browser to apply EXIF automatically
+    return await createImageBitmap(file, { imageOrientation: 'from-image' });
+  } catch(e) {
+    // Fallback for older browsers
+    return await createImageBitmap(file);
+  }
+}
+
 async function handlePhotoUpload(id, input) {
   const file = input.files[0];
   if(!file) return;
@@ -1944,75 +2008,233 @@ async function handlePhotoUpload(id, input) {
   setBusy(true);
   showToast('⏳ Sizing down & uploading...');
 
-  const reader = new FileReader();
-  reader.onload = function(e) {
-    const img = new Image();
-    img.onload = function() {
-      const canvas = document.createElement('canvas');
-      const MAX = 800;
-      let w = img.width, h = img.height;
-      if(w > h) { if(w > MAX) { h = Math.round(h*MAX/w); w = MAX; } }
-      else       { if(h > MAX) { w = Math.round(w*MAX/h); h = MAX; } }
-      canvas.width = w;
-      canvas.height = h;
-      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+  // Get EXIF-corrected bitmap — browser handles orientation natively
+  const bitmap = await getOrientedBitmap(file);
 
-      canvas.toBlob(async (blob) => {
-        try {
-          // Upload compressed blob to Firebase Storage
-          const storageRef = firebase.storage().ref(`firearms/${id}.jpg`);
-          const snapshot = await storageRef.put(blob);
-          const downloadURL = await snapshot.ref.getDownloadURL();
+  // bitmap dimensions are already correct (EXIF applied)
+  // If portrait, rotate 90° CCW so barrel faces left, grip right
+  const MAX = 800;
+  const isPortrait = bitmap.height > bitmap.width;
+  let outW = isPortrait ? bitmap.height : bitmap.width;
+  let outH = isPortrait ? bitmap.width  : bitmap.height;
 
-          // Save only the URL link into the entry — never the raw image data
-          const idx = data.findIndex(d => d.id === id);
-          if(idx !== -1) {
-            data[idx].photoUrl = downloadURL;
-            data[idx].photo = '';
-            data[idx].needPic = false;
-            localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-            if(window._fbSave) await window._fbSave(data);
-            filterTable();
-            showToast('✅ Photo synced to all devices!');
-          }
-        } catch(error) {
-          console.error('Upload error:', error.code, error.message);
-          if(error.code === 'storage/unauthorized') {
-            showToast('❌ Permission denied — update Firebase Storage rules');
-          } else {
-            showToast('❌ Upload failed: ' + error.message.substring(0,60));
-          }
-        } finally {
-          window._syncPaused = false;
-          setBusy(false);
-        }
-      }, 'image/jpeg', 0.7);
-    };
-    img.onerror = () => { setBusy(false); window._syncPaused = false; showToast('❌ Could not read image'); };
-    img.src = e.target.result;
-  };
-  reader.onerror = () => { setBusy(false); window._syncPaused = false; showToast('❌ Could not read file'); };
-  reader.readAsDataURL(file);
+  // Scale to MAX on longest side
+  if(outW > MAX) { outH = Math.round(outH * MAX / outW); outW = MAX; }
+  if(outH > MAX) { outW = Math.round(outW * MAX / outH); outH = MAX; }
+
+  const canvas = document.createElement('canvas');
+  canvas.width  = outW;
+  canvas.height = outH;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, outW, outH);
+
+  if (isPortrait) {
+    // Rotate 90° CCW: translate to bottom-left, rotate, draw
+    ctx.save();
+    ctx.translate(0, outH);
+    ctx.rotate(-Math.PI / 2);
+    // Draw the bitmap scaled into the rotated space
+    ctx.drawImage(bitmap, 0, 0, bitmap.width, bitmap.height,
+                           0, 0, outH, outW);
+    ctx.restore();
+  } else {
+    ctx.drawImage(bitmap, 0, 0, outW, outH);
+  }
+  bitmap.close(); // free GPU memory
+
+  // No FileReader needed — go straight to blob
+  canvas.toBlob(async (blob) => {
+    try {
+      const storageRef = firebase.storage().ref(`firearms/${id}.jpg`);
+      const snapshot = await storageRef.put(blob);
+      const downloadURL = await snapshot.ref.getDownloadURL();
+      const idx = data.findIndex(d => d.id === id);
+      if(idx !== -1) {
+        data[idx].photoUrl = downloadURL;
+        data[idx].photo = '';
+        data[idx].needPic = false;
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+        if(window._fbSave) await window._fbSave(data);
+        filterTable();
+        showToast('✅ Photo synced to all devices!');
+      }
+    } catch(error) {
+      console.error('Upload error:', error.code, error.message);
+      if(error.code === 'storage/unauthorized') {
+        showToast('❌ Permission denied — update Firebase Storage rules');
+      } else {
+        showToast('❌ Upload failed: ' + error.message.substring(0,60));
+      }
+    } finally {
+      window._syncPaused = false;
+      setBusy(false);
+    }
+  }, 'image/jpeg', 0.82);
 }
 
 function viewPhoto(id) {
-  const entry = data.find(d=>d.id===id);
-  if(!entry || (!entry.photo && !entry.photoUrl)) return;
+  const entry = data.find(d => d.id === id);
+  if (!entry || (!entry.photo && !entry.photoUrl)) return;
+
+  const existing = document.getElementById('photoOverlay');
+  if (existing) existing.remove();
+
   const photoSrc = entry.photo || entry.photoUrl;
-  const overlay = document.createElement('div');
-  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:9999;display:flex;align-items:center;justify-content:center;cursor:pointer;';
-  overlay.innerHTML = `<div style="position:relative;max-width:90vw;max-height:90vh;">
-    <img src="${photoSrc}" style="max-width:90vw;max-height:85vh;border-radius:8px;object-fit:contain;">
-    <div style="text-align:center;color:#fff;margin-top:10px;font-size:14px;">${entry.name} — Click anywhere to close</div>
-    <button onclick="event.stopPropagation();removePhoto(${id});document.body.removeChild(this.closest('[style*=fixed]'));" style="position:absolute;top:-10px;right:-10px;background:#c0392b;color:#fff;border:none;border-radius:50%;width:28px;height:28px;cursor:pointer;font-size:16px;">×</button>
-  </div>`;
-  overlay.onclick = () => document.body.removeChild(overlay);
-  document.body.appendChild(overlay);
+  let currentRotation = 0; // tracks cumulative rotation in degrees
+
+  const ov = document.createElement('div');
+  ov.id = 'photoOverlay';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.88);z-index:9999;display:flex;align-items:center;justify-content:center;';
+
+  const inner = document.createElement('div');
+  inner.style.cssText = 'display:flex;flex-direction:column;align-items:center;max-width:94vw;max-height:94vh;';
+  inner.onclick = e => e.stopPropagation();
+
+  // Photo — rotation applied via CSS transform
+  const img = document.createElement('img');
+  img.src = photoSrc;
+  img.style.cssText = 'max-width:90vw;max-height:72vh;border-radius:10px;object-fit:contain;display:block;box-shadow:0 8px 32px rgba(0,0,0,0.5);transition:transform 0.25s ease;';
+  inner.appendChild(img);
+
+  // Button bar
+  const bar = document.createElement('div');
+  bar.style.cssText = 'display:flex;align-items:center;justify-content:space-between;width:100%;margin-top:14px;gap:10px;flex-wrap:wrap;';
+
+  const nameEl = document.createElement('div');
+  nameEl.style.cssText = 'color:rgba(255,255,255,0.75);font-size:13px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+  nameEl.textContent = entry.name;
+  bar.appendChild(nameEl);
+
+  const btnWrap = document.createElement('div');
+  btnWrap.style.cssText = 'display:flex;gap:8px;flex-shrink:0;flex-wrap:wrap;';
+
+  const btnStyle = 'padding:8px 16px;border-radius:7px;cursor:pointer;font-size:13px;font-weight:500;border:none;';
+  const ghostStyle = btnStyle + 'background:rgba(255,255,255,0.15);color:#fff;border:1px solid rgba(255,255,255,0.3);';
+
+  // Rotate CW button
+  const rotateCWBtn = document.createElement('button');
+  rotateCWBtn.style.cssText = ghostStyle;
+  rotateCWBtn.innerHTML = '↻ Rotate';
+  rotateCWBtn.title = 'Rotate 90° clockwise';
+  rotateCWBtn.onclick = () => {
+    currentRotation = (currentRotation + 90) % 360;
+    img.style.transform = `rotate(${currentRotation}deg)`;
+    // Adjust max dimensions so rotated portrait fits in viewport
+    if (currentRotation === 90 || currentRotation === 270) {
+      img.style.maxWidth = '72vh';
+      img.style.maxHeight = '90vw';
+    } else {
+      img.style.maxWidth = '90vw';
+      img.style.maxHeight = '72vh';
+    }
+  };
+  btnWrap.appendChild(rotateCWBtn);
+
+  // Save rotation button — re-encodes the rotated image and re-uploads
+  const saveRotBtn = document.createElement('button');
+  saveRotBtn.style.cssText = ghostStyle;
+  saveRotBtn.innerHTML = '💾 Save';
+  saveRotBtn.title = 'Save rotated image';
+  saveRotBtn.onclick = async () => {
+    if (currentRotation === 0) { showToast('No rotation to save'); return; }
+    saveRotBtn.disabled = true;
+    saveRotBtn.textContent = 'Saving…';
+    try {
+      // Draw directly from the already-loaded img element in the overlay —
+      // avoids CORS issues from re-fetching Firebase Storage URLs
+      const rad = (currentRotation * Math.PI) / 180;
+      const sin = Math.abs(Math.sin(rad)), cos = Math.abs(Math.cos(rad));
+      // naturalWidth/Height are the true pixel dimensions (not CSS display size)
+      const nw = img.naturalWidth, nh = img.naturalHeight;
+      const cw = Math.round(nw * cos + nh * sin);
+      const ch = Math.round(nw * sin + nh * cos);
+      const canvas = document.createElement('canvas');
+      canvas.width = cw; canvas.height = ch;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, cw, ch);
+      ctx.translate(cw / 2, ch / 2);
+      ctx.rotate(rad);
+      ctx.drawImage(img, -nw / 2, -nh / 2);
+      canvas.toBlob(async blob => {
+        try {
+          const storageRef = firebase.storage().ref(`firearms/${id}.jpg`);
+          const snap = await storageRef.put(blob);
+          const url = await snap.ref.getDownloadURL();
+          const idx = data.findIndex(d => d.id === id);
+          if (idx !== -1) {
+            data[idx].photoUrl = url;
+            data[idx].photo = '';
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+            if (window._fbSave) await window._fbSave(data);
+            filterTable();
+          }
+          showToast('✅ Rotation saved');
+          currentRotation = 0;
+          img.style.transform = 'rotate(0deg)';
+          img.src = url + (url.includes('?') ? '&' : '?') + 'nocache=' + Date.now();
+        } catch(e) { showToast('❌ Save failed: ' + e.message.substring(0, 50)); }
+        finally { saveRotBtn.disabled = false; saveRotBtn.innerHTML = '💾 Save'; }
+      }, 'image/jpeg', 0.88);
+    } catch(e) { showToast('❌ ' + e.message); saveRotBtn.disabled = false; saveRotBtn.innerHTML = '💾 Save'; }
+  };
+  btnWrap.appendChild(saveRotBtn);
+
+  // Replace button
+  const replaceLabel = document.createElement('label');
+  replaceLabel.style.cssText = ghostStyle + 'display:inline-flex;align-items:center;gap:6px;';
+  replaceLabel.innerHTML = '🔄 Replace';
+  const replaceInput = document.createElement('input');
+  replaceInput.type = 'file';
+  replaceInput.accept = 'image/*';
+  replaceInput.style.display = 'none';
+  replaceInput.onchange = () => { ov.remove(); handlePhotoUpload(id, replaceInput); };
+  replaceLabel.appendChild(replaceInput);
+  btnWrap.appendChild(replaceLabel);
+
+  // Delete button
+  const delBtn = document.createElement('button');
+  delBtn.style.cssText = btnStyle + 'background:#c0392b;color:#fff;';
+  delBtn.innerHTML = '🗑️ Delete';
+  delBtn.onclick = () => { if (confirm('Delete this photo?')) { removePhoto(id); ov.remove(); } };
+  btnWrap.appendChild(delBtn);
+
+  // Close button
+  const closeBtn = document.createElement('button');
+  closeBtn.style.cssText = ghostStyle;
+  closeBtn.innerHTML = '✕ Close';
+  closeBtn.onclick = () => ov.remove();
+  btnWrap.appendChild(closeBtn);
+
+  bar.appendChild(btnWrap);
+  inner.appendChild(bar);
+  ov.appendChild(inner);
+
+  // Click backdrop to close
+  ov.onclick = () => ov.remove();
+
+  document.body.appendChild(ov);
 }
 
-function removePhoto(id) {
+async function removePhoto(id) {
   const entry = data.find(d=>d.id===id);
-  if(entry) { entry.photo = ''; saveAll(); filterTable(); showToast("Photo removed"); }
+  if(!entry) return;
+  // Delete from Firebase Storage if cloud URL exists
+  if(entry.photoUrl) {
+    try {
+      const storageRef = firebase.storage().refFromURL(entry.photoUrl);
+      await storageRef.delete();
+    } catch(e) {
+      console.warn('Could not delete from Storage (may already be gone):', e.message);
+    }
+  }
+  entry.photo = '';
+  entry.photoUrl = '';
+  entry.needPic = true;
+  saveAll();
+  filterTable();
+  showToast('🗑️ Photo removed');
 }
 
 // ─── Inline Name Edit ────────────────────────────────────────
@@ -2082,6 +2304,11 @@ function resolveNameConfirm(accept) {
 
 let _saveTimer = null;
 let _lastSave = 0;
+// ─── Virtual Scroll ───────────────────────────────────────────
+const VS_ROW_H = 58;
+const VS_PAGE  = 40;
+let   _vsStart = 0;
+let   _vsObs   = null;
 function saveAll() {
   // Debounce — don't spam Firebase on rapid edits
   const now = Date.now();
@@ -2259,7 +2486,6 @@ function renderTable() {
   updateStats();
   setTimeout(fixStickyHeader, 50);
   renderMobileCards();
-  // Re-apply privacy blur after render
   setTimeout(() => {
     if(privacyMode) {
       ['stat-total','stat-owned','stat-want','stat-pic','stat-invest'].forEach(id => {
@@ -2271,18 +2497,21 @@ function renderTable() {
       });
     }
   }, 0);
-  const tbody = document.getElementById('tableBody');
-  if(!filtered.length) {
-    tbody.innerHTML = `<tr><td colspan="18" style="text-align:center;padding:40px;color:var(--muted)">No results found.</td></tr>`;
-    return;
-  }
-  tbody.innerHTML = filtered.map((d, i) => `
+  _vsStart = 0;
+  vsRender();
+}
+
+function rowHTML(d, i) { return `
     <tr id="row-${d.id}">
       <td class="td-num">${i+1}</td>
       <td class="thumb-cell">
         ${(d.photo || d.photoUrl)
           ? `<img src="${d.photo || d.photoUrl}" class="thumb-img" onclick="viewPhoto(${d.id})" title="Click to view">`
           : `<div class="thumb-placeholder" onclick="triggerPhotoUpload(${d.id})" title="Upload photo">📷</div>`}
+        <span class="photo-cloud-badge ${d.photoUrl ? 'cloud-yes' : d.photo ? 'cloud-local' : 'cloud-none'}"
+              title="${d.photoUrl ? '☁️ Backed up to cloud' : d.photo ? '💾 Local only — not cloud backed up' : 'No photo'}">
+          ${d.photoUrl ? '☁️' : d.photo ? '💾' : ''}
+        </span>
         <input type="file" accept="image/*" id="photoinput-${d.id}" style="display:none" onchange="handlePhotoUpload(${d.id},this)">
       </td>
       <td>
@@ -2402,8 +2631,9 @@ function renderTable() {
         <div class="serial-wrap">
           <input class="editable serial-input ${privacyMode?'privacy-blur ':''}s-input" type="text" placeholder="Serial #"
             value="${escHtml(d.serial||'')}"
+            oninput="this.value=this.value.toUpperCase().replace(/[^A-Z0-9\-]/g,'')"
             onchange="updateField(${d.id},'serial',this.value)"
-            autocomplete="off" />
+            autocomplete="off" spellcheck="false" />
         </div>
       </td>
 
@@ -2454,7 +2684,49 @@ function renderTable() {
         </div>
       </td>
     </tr>
-  `).join('');
+  `; }
+
+function vsRender() {
+  const tbody = document.getElementById('tableBody');
+  if (!filtered.length) {
+    tbody.innerHTML = `<tr><td colspan="18" style="text-align:center;padding:40px;color:var(--muted)">No results found.</td></tr>`;
+    return;
+  }
+
+  const total   = filtered.length;
+  const start   = Math.max(0, _vsStart);
+  const end     = Math.min(total, start + VS_PAGE);
+  const topPx   = start * VS_ROW_H;
+  const botPx   = Math.max(0, (total - end)) * VS_ROW_H;
+
+  // Spacer rows simulate the full list height without rendering every row
+  const topSpacer = topPx  > 0 ? `<tr id="vs-top"  style="height:${topPx}px;"><td colspan="18"></td></tr>` : '';
+  const botSpacer = botPx  > 0 ? `<tr id="vs-bot"  style="height:${botPx}px;"><td colspan="18"></td></tr>` : '';
+
+  const rows = filtered.slice(start, end).map((d, idx) => rowHTML(d, start + idx)).join('');
+  tbody.innerHTML = topSpacer + rows + botSpacer;
+
+  // Disconnect old observer
+  if (_vsObs) _vsObs.disconnect();
+
+  // Watch sentinels — scroll up/down triggers re-render of next window
+  _vsObs = new IntersectionObserver(entries => {
+    entries.forEach(e => {
+      if (!e.isIntersecting) return;
+      if (e.target.id === 'vs-bot') {
+        _vsStart = Math.min(total - VS_PAGE, _vsStart + Math.floor(VS_PAGE / 2));
+        vsRender();
+      } else if (e.target.id === 'vs-top' && _vsStart > 0) {
+        _vsStart = Math.max(0, _vsStart - Math.floor(VS_PAGE / 2));
+        vsRender();
+      }
+    });
+  }, { rootMargin: '120px' });
+
+  const topEl = document.getElementById('vs-top');
+  const botEl = document.getElementById('vs-bot');
+  if (topEl) _vsObs.observe(topEl);
+  if (botEl) _vsObs.observe(botEl);
 }
 
 // ─── Date Input Builder ───────────────────────────────────────
@@ -2872,10 +3144,12 @@ const CALIBER_COLORS = {
 
 function caliberPill(cal) {
   if(!cal) return '<span style="color:var(--muted);font-size:12px;">—</span>';
-  const key = cal.toLowerCase().trim();
+  // Normalize: lowercase + strip spaces so ".45 ACP" and ".45acp" both match
+  const key = cal.toLowerCase().trim().replace(/\s+/g, '');
   let style = null;
   for(const [k,v] of Object.entries(CALIBER_COLORS)) {
-    if(key.includes(k)) { style = v; break; }
+    const normK = k.toLowerCase().replace(/\s+/g, '');
+    if(key.includes(normK)) { style = v; break; }
   }
   if(style) {
     return `<span class="cal-pill" style="background:${style.bg};color:${style.color};">${escHtml(cal)}</span>`;
@@ -3074,7 +3348,11 @@ function openEditModal(id) {
   const auditLog = document.getElementById('fAuditLog');
   if(d.auditLog && d.auditLog.length && auditGroup && auditLog) {
     auditGroup.style.display = '';
-    auditLog.innerHTML = d.auditLog.map(e => `<div class="audit-entry">${escHtml(e)}</div>`).join('');
+    auditLog.innerHTML = d.auditLog.map(e => {
+      if(typeof e === 'string') return `<div class="audit-entry">${escHtml(e)}</div>`;
+      const ts = e.ts ? new Date(e.ts).toLocaleDateString() : '';
+      return `<div class="audit-entry"><span style="color:var(--muted);font-size:10px;">${ts}</span> ${escHtml(e.note||e.msg||JSON.stringify(e))}</div>`;
+    }).join('');
   } else if(auditGroup) {
     auditGroup.style.display = 'none';
   }
@@ -3144,6 +3422,8 @@ function resolveDeleteConfirm(confirmed) {
   overlay.classList.remove('open');
   if(confirmed) {
     const id = parseInt(overlay.dataset.pendingId);
+    // Remove from Firestore per-doc collection too
+    if(window._fbDelete) window._fbDelete(id);
     data = data.filter(d=>d.id!==id);
     saveAll();
     filterTable();
@@ -3425,6 +3705,18 @@ function togglePrivacy() {
 }
 
 // ─── Audit Trail ─────────────────────────────────────────────
+function clearAuditLog() {
+  if(!_editingId) return;
+  if(!confirm('Clear the change log for this entry?')) return;
+  const entry = data.find(d=>d.id===_editingId);
+  if(entry) {
+    entry.auditLog = [];
+    document.getElementById('fAuditLog').innerHTML = '';
+    saveAll();
+    showToast('Change log cleared');
+  }
+}
+
 function logChange(entry, field, oldVal, newVal) {
   if(!entry) return;
   if(!entry.auditLog) entry.auditLog = [];
@@ -4181,7 +4473,7 @@ if('serviceWorker' in navigator) {
         </div>
         <div class="ri-field">
           <label>Serial Number</label>
-          <input type="text" id="riSerial" placeholder="e.g. BXYZ123">
+          <input type="text" id="riSerial" placeholder="e.g. BXYZ123" oninput="this.value=this.value.toUpperCase().replace(/[^A-Z0-9\-]/g,'')" spellcheck="false">
         </div>
         <div class="ri-field">
           <label>UPC / Barcode</label>
