@@ -2141,45 +2141,42 @@ function viewPhoto(id) {
     saveRotBtn.disabled = true;
     saveRotBtn.textContent = 'Saving…';
     try {
-      // Draw current rotation onto a canvas and re-upload
-      const tmpImg = new Image();
-      tmpImg.crossOrigin = 'anonymous';
-      tmpImg.onload = async () => {
-        const rad = (currentRotation * Math.PI) / 180;
-        const sin = Math.abs(Math.sin(rad)), cos = Math.abs(Math.cos(rad));
-        const cw = Math.round(tmpImg.width * cos + tmpImg.height * sin);
-        const ch = Math.round(tmpImg.width * sin + tmpImg.height * cos);
-        const canvas = document.createElement('canvas');
-        canvas.width = cw; canvas.height = ch;
-        const ctx = canvas.getContext('2d');
-        ctx.fillStyle = '#fff';
-        ctx.fillRect(0, 0, cw, ch);
-        ctx.translate(cw / 2, ch / 2);
-        ctx.rotate(rad);
-        ctx.drawImage(tmpImg, -tmpImg.width / 2, -tmpImg.height / 2);
-        canvas.toBlob(async blob => {
-          try {
-            const storageRef = firebase.storage().ref(`firearms/${id}.jpg`);
-            const snap = await storageRef.put(blob);
-            const url = await snap.ref.getDownloadURL();
-            const idx = data.findIndex(d => d.id === id);
-            if (idx !== -1) {
-              data[idx].photoUrl = url;
-              data[idx].photo = '';
-              localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-              if (window._fbSave) await window._fbSave(data);
-              filterTable();
-            }
-            showToast('✅ Rotation saved');
-            currentRotation = 0;
-            img.style.transform = 'rotate(0deg)';
-            img.src = url + '&t=' + Date.now(); // bust cache
-          } catch(e) { showToast('❌ Save failed: ' + e.message.substring(0,50)); }
-          finally { saveRotBtn.disabled = false; saveRotBtn.innerHTML = '💾 Save'; }
-        }, 'image/jpeg', 0.88);
-      };
-      tmpImg.onerror = () => { showToast('❌ Could not load image for rotation'); saveRotBtn.disabled = false; saveRotBtn.innerHTML = '💾 Save'; };
-      tmpImg.src = photoSrc + (photoSrc.includes('?') ? '&' : '?') + 't=' + Date.now();
+      // Draw directly from the already-loaded img element in the overlay —
+      // avoids CORS issues from re-fetching Firebase Storage URLs
+      const rad = (currentRotation * Math.PI) / 180;
+      const sin = Math.abs(Math.sin(rad)), cos = Math.abs(Math.cos(rad));
+      // naturalWidth/Height are the true pixel dimensions (not CSS display size)
+      const nw = img.naturalWidth, nh = img.naturalHeight;
+      const cw = Math.round(nw * cos + nh * sin);
+      const ch = Math.round(nw * sin + nh * cos);
+      const canvas = document.createElement('canvas');
+      canvas.width = cw; canvas.height = ch;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, cw, ch);
+      ctx.translate(cw / 2, ch / 2);
+      ctx.rotate(rad);
+      ctx.drawImage(img, -nw / 2, -nh / 2);
+      canvas.toBlob(async blob => {
+        try {
+          const storageRef = firebase.storage().ref(`firearms/${id}.jpg`);
+          const snap = await storageRef.put(blob);
+          const url = await snap.ref.getDownloadURL();
+          const idx = data.findIndex(d => d.id === id);
+          if (idx !== -1) {
+            data[idx].photoUrl = url;
+            data[idx].photo = '';
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+            if (window._fbSave) await window._fbSave(data);
+            filterTable();
+          }
+          showToast('✅ Rotation saved');
+          currentRotation = 0;
+          img.style.transform = 'rotate(0deg)';
+          img.src = url + (url.includes('?') ? '&' : '?') + 'nocache=' + Date.now();
+        } catch(e) { showToast('❌ Save failed: ' + e.message.substring(0, 50)); }
+        finally { saveRotBtn.disabled = false; saveRotBtn.innerHTML = '💾 Save'; }
+      }, 'image/jpeg', 0.88);
     } catch(e) { showToast('❌ ' + e.message); saveRotBtn.disabled = false; saveRotBtn.innerHTML = '💾 Save'; }
   };
   btnWrap.appendChild(saveRotBtn);
