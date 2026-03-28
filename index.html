@@ -2093,9 +2093,12 @@ function viewPhoto(id) {
 
   // Photo — rotation applied via CSS transform
   const img = document.createElement('img');
-  img.style.cssText = 'max-width:90vw;max-height:72vh;border-radius:10px;object-fit:contain;display:block;box-shadow:0 8px 32px rgba(0,0,0,0.5);transition:transform 0.25s ease;';
-  inner.appendChild(img);
-
+  // Wrap image in a fixed-size box so rotation never overflows into buttons
+  const imgWrap = document.createElement('div');
+  imgWrap.style.cssText = 'width:min(90vw,640px);height:min(68vh,480px);display:flex;align-items:center;justify-content:center;overflow:hidden;flex-shrink:0;';
+  inner.appendChild(imgWrap);
+  img.style.cssText = 'max-width:100%;max-height:100%;border-radius:10px;object-fit:contain;display:block;box-shadow:0 8px 32px rgba(0,0,0,0.5);transition:transform 0.25s ease;transform-origin:center center;';
+  imgWrap.appendChild(img);
   // Load image via Firebase getDownloadURL then XHR as blob —
   // XHR with Firebase token works even without CORS headers
   let _sourceBitmap = null;
@@ -2146,13 +2149,13 @@ function viewPhoto(id) {
   rotateCWBtn.onclick = () => {
     currentRotation = (currentRotation + 90) % 360;
     img.style.transform = `rotate(${currentRotation}deg)`;
-    // Adjust max dimensions so rotated portrait fits in viewport
+    // Scale down when portrait so it fits inside the fixed wrapper box
     if (currentRotation === 90 || currentRotation === 270) {
-      img.style.maxWidth = '72vh';
-      img.style.maxHeight = '90vw';
+      img.style.maxWidth = 'min(68vh, 480px)';
+      img.style.maxHeight = 'min(90vw, 640px)';
     } else {
-      img.style.maxWidth = '90vw';
-      img.style.maxHeight = '72vh';
+      img.style.maxWidth = '100%';
+      img.style.maxHeight = '100%';
     }
   };
   btnWrap.appendChild(rotateCWBtn);
@@ -4801,7 +4804,7 @@ Return ONLY raw JSON — no markdown, no backticks:
 Single firearm = still use the array with one item. Use "" for any field not visible. NEVER fabricate serial numbers.`;
 
     const mediaType = detectMediaType(_riImageBase64);
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`;
     const response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
