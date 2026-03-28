@@ -2077,24 +2077,26 @@ function viewPhoto(id) {
   const entry = data.find(d => d.id === id);
   if (!entry || (!entry.photo && !entry.photoUrl)) return;
 
+  // Remove any existing overlay
   const existing = document.getElementById('photoOverlay');
   if (existing) existing.remove();
 
   const photoSrc = entry.photo || entry.photoUrl;
-  let currentRotation = 0; // tracks cumulative rotation in degrees
 
+  // Build overlay element — set id FIRST so inline handlers can find it
   const ov = document.createElement('div');
   ov.id = 'photoOverlay';
   ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.88);z-index:9999;display:flex;align-items:center;justify-content:center;';
 
+  // Inner container — stop clicks here from closing overlay
   const inner = document.createElement('div');
   inner.style.cssText = 'display:flex;flex-direction:column;align-items:center;max-width:94vw;max-height:94vh;';
   inner.onclick = e => e.stopPropagation();
 
-  // Photo — rotation applied via CSS transform
+  // Photo
   const img = document.createElement('img');
   img.src = photoSrc;
-  img.style.cssText = 'max-width:90vw;max-height:72vh;border-radius:10px;object-fit:contain;display:block;box-shadow:0 8px 32px rgba(0,0,0,0.5);transition:transform 0.25s ease;';
+  img.style.cssText = 'max-width:90vw;max-height:72vh;border-radius:10px;object-fit:contain;display:block;box-shadow:0 8px 32px rgba(0,0,0,0.5);';
   inner.appendChild(img);
 
   // Button bar
@@ -2107,86 +2109,13 @@ function viewPhoto(id) {
   bar.appendChild(nameEl);
 
   const btnWrap = document.createElement('div');
-  btnWrap.style.cssText = 'display:flex;gap:8px;flex-shrink:0;flex-wrap:wrap;';
+  btnWrap.style.cssText = 'display:flex;gap:8px;flex-shrink:0;';
 
   const btnStyle = 'padding:8px 16px;border-radius:7px;cursor:pointer;font-size:13px;font-weight:500;border:none;';
-  const ghostStyle = btnStyle + 'background:rgba(255,255,255,0.15);color:#fff;border:1px solid rgba(255,255,255,0.3);';
 
-  // Rotate CW button
-  const rotateCWBtn = document.createElement('button');
-  rotateCWBtn.style.cssText = ghostStyle;
-  rotateCWBtn.innerHTML = '↻ Rotate';
-  rotateCWBtn.title = 'Rotate 90° clockwise';
-  rotateCWBtn.onclick = () => {
-    currentRotation = (currentRotation + 90) % 360;
-    img.style.transform = `rotate(${currentRotation}deg)`;
-    // Adjust max dimensions so rotated portrait fits in viewport
-    if (currentRotation === 90 || currentRotation === 270) {
-      img.style.maxWidth = '72vh';
-      img.style.maxHeight = '90vw';
-    } else {
-      img.style.maxWidth = '90vw';
-      img.style.maxHeight = '72vh';
-    }
-  };
-  btnWrap.appendChild(rotateCWBtn);
-
-  // Save rotation button — re-encodes the rotated image and re-uploads
-  const saveRotBtn = document.createElement('button');
-  saveRotBtn.style.cssText = ghostStyle;
-  saveRotBtn.innerHTML = '💾 Save';
-  saveRotBtn.title = 'Save rotated image';
-  saveRotBtn.onclick = async () => {
-    if (currentRotation === 0) { showToast('No rotation to save'); return; }
-    saveRotBtn.disabled = true;
-    saveRotBtn.textContent = 'Saving…';
-    try {
-      // Draw current rotation onto a canvas and re-upload
-      const tmpImg = new Image();
-      tmpImg.crossOrigin = 'anonymous';
-      tmpImg.onload = async () => {
-        const rad = (currentRotation * Math.PI) / 180;
-        const sin = Math.abs(Math.sin(rad)), cos = Math.abs(Math.cos(rad));
-        const cw = Math.round(tmpImg.width * cos + tmpImg.height * sin);
-        const ch = Math.round(tmpImg.width * sin + tmpImg.height * cos);
-        const canvas = document.createElement('canvas');
-        canvas.width = cw; canvas.height = ch;
-        const ctx = canvas.getContext('2d');
-        ctx.fillStyle = '#fff';
-        ctx.fillRect(0, 0, cw, ch);
-        ctx.translate(cw / 2, ch / 2);
-        ctx.rotate(rad);
-        ctx.drawImage(tmpImg, -tmpImg.width / 2, -tmpImg.height / 2);
-        canvas.toBlob(async blob => {
-          try {
-            const storageRef = firebase.storage().ref(`firearms/${id}.jpg`);
-            const snap = await storageRef.put(blob);
-            const url = await snap.ref.getDownloadURL();
-            const idx = data.findIndex(d => d.id === id);
-            if (idx !== -1) {
-              data[idx].photoUrl = url;
-              data[idx].photo = '';
-              localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-              if (window._fbSave) await window._fbSave(data);
-              filterTable();
-            }
-            showToast('✅ Rotation saved');
-            currentRotation = 0;
-            img.style.transform = 'rotate(0deg)';
-            img.src = url + '&t=' + Date.now(); // bust cache
-          } catch(e) { showToast('❌ Save failed: ' + e.message.substring(0,50)); }
-          finally { saveRotBtn.disabled = false; saveRotBtn.innerHTML = '💾 Save'; }
-        }, 'image/jpeg', 0.88);
-      };
-      tmpImg.onerror = () => { showToast('❌ Could not load image for rotation'); saveRotBtn.disabled = false; saveRotBtn.innerHTML = '💾 Save'; };
-      tmpImg.src = photoSrc + (photoSrc.includes('?') ? '&' : '?') + 't=' + Date.now();
-    } catch(e) { showToast('❌ ' + e.message); saveRotBtn.disabled = false; saveRotBtn.innerHTML = '💾 Save'; }
-  };
-  btnWrap.appendChild(saveRotBtn);
-
-  // Replace button
+  // Replace button (label wrapping hidden file input)
   const replaceLabel = document.createElement('label');
-  replaceLabel.style.cssText = ghostStyle + 'display:inline-flex;align-items:center;gap:6px;';
+  replaceLabel.style.cssText = btnStyle + 'background:rgba(255,255,255,0.15);color:#fff;border:1px solid rgba(255,255,255,0.3);display:inline-flex;align-items:center;gap:6px;';
   replaceLabel.innerHTML = '🔄 Replace';
   const replaceInput = document.createElement('input');
   replaceInput.type = 'file';
@@ -2200,12 +2129,14 @@ function viewPhoto(id) {
   const delBtn = document.createElement('button');
   delBtn.style.cssText = btnStyle + 'background:#c0392b;color:#fff;';
   delBtn.innerHTML = '🗑️ Delete';
-  delBtn.onclick = () => { if (confirm('Delete this photo?')) { removePhoto(id); ov.remove(); } };
+  delBtn.onclick = () => {
+    if (confirm('Delete this photo?')) { removePhoto(id); ov.remove(); }
+  };
   btnWrap.appendChild(delBtn);
 
   // Close button
   const closeBtn = document.createElement('button');
-  closeBtn.style.cssText = ghostStyle;
+  closeBtn.style.cssText = btnStyle + 'background:rgba(255,255,255,0.15);color:#fff;border:1px solid rgba(255,255,255,0.3);';
   closeBtn.innerHTML = '✕ Close';
   closeBtn.onclick = () => ov.remove();
   btnWrap.appendChild(closeBtn);
