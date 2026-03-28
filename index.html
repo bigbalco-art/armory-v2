@@ -1131,15 +1131,27 @@
     <h2 id="modalTitle">ADD FIREARM</h2>
     <div class="form-grid" style="grid-template-columns:1fr 1fr;">
 
-      <!-- PHOTO -->
-      <div class="form-group full" style="display:flex;align-items:center;gap:16px;">
-        <div id="fPhotoPreview" style="width:80px;height:64px;border:2px dashed var(--border);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:28px;cursor:pointer;flex-shrink:0;overflow:hidden;" onclick="document.getElementById('fPhotoFile').click()">📷</div>
-        <div>
-          <div style="font-family:'JetBrains Mono',monospace;font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);margin-bottom:4px;">Photo</div>
-          <button type="button" class="btn btn-ghost btn-sm" onclick="document.getElementById('fPhotoFile').click()">Upload Photo</button>
-          <button type="button" class="btn btn-ghost btn-sm" id="fPhotoRemoveBtn" style="display:none;color:var(--red);" onclick="clearModalPhoto()">Remove</button>
-          <input type="file" id="fPhotoFile" accept="image/*" style="display:none" onchange="previewModalPhoto(this)">
-          <input type="hidden" id="fPhotoData">
+      <!-- SCAN LABEL + PHOTO ROW -->
+      <div class="form-group full" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+        <!-- Scan Label button -->
+        <div style="flex:1;min-width:200px;">
+          <div style="font-family:'JetBrains Mono',monospace;font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);margin-bottom:6px;">📋 Label / Box Scan</div>
+          <label style="display:inline-flex;align-items:center;gap:6px;padding:8px 14px;background:rgba(37,99,168,0.08);border:1px solid var(--accent2);color:var(--accent2);border-radius:7px;cursor:pointer;font-size:13px;font-weight:500;">
+            📷 Scan Label
+            <input type="file" id="labelScanInput" accept="image/*" style="display:none" onchange="scanLabelPhoto(this)">
+          </label>
+          <div id="labelScanStatus" style="font-size:11px;color:var(--muted);margin-top:5px;min-height:16px;"></div>
+        </div>
+        <!-- Photo upload -->
+        <div style="display:flex;align-items:center;gap:12px;">
+          <div id="fPhotoPreview" style="width:80px;height:64px;border:2px dashed var(--border);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:28px;cursor:pointer;flex-shrink:0;overflow:hidden;" onclick="document.getElementById('fPhotoFile').click()">📷</div>
+          <div>
+            <div style="font-family:'JetBrains Mono',monospace;font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);margin-bottom:4px;">Firearm Photo</div>
+            <button type="button" class="btn btn-ghost btn-sm" onclick="document.getElementById('fPhotoFile').click()">Upload</button>
+            <button type="button" class="btn btn-ghost btn-sm" id="fPhotoRemoveBtn" style="display:none;color:var(--red);" onclick="clearModalPhoto()">Remove</button>
+            <input type="file" id="fPhotoFile" accept="image/*" style="display:none" onchange="previewModalPhoto(this)">
+            <input type="hidden" id="fPhotoData">
+          </div>
         </div>
       </div>
 
@@ -1183,7 +1195,9 @@
           <input type="text" id="fUPC" placeholder="12-digit barcode"
             style="flex:1;font-family:'JetBrains Mono',monospace;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:9px 10px;border-radius:6px;font-size:13px;outline:none;" />
           <button type="button" class="btn btn-ghost btn-sm" onclick="manualLookup('upc')">🔍 Search</button>
-          <button type="button" class="btn btn-ghost btn-sm" onclick="openBarcodeScanner()" title="Scan barcode with camera">📷 Scan</button>
+          <label class="btn btn-ghost btn-sm" style="cursor:pointer;" title="Scan box/label to fill UPC and all fields">📷 Scan
+            <input type="file" id="labelScanInputUPC" accept="image/*" style="display:none" onchange="scanLabelPhoto(this)">
+          </label>
         </div>
       </div>
       <div class="form-group">
@@ -3870,6 +3884,216 @@ async function uploadPhotoToFirebase(file, entryId) {
 
 // ─── Barcode Scanner ─────────────────────────────────────────
 let _scanner = null;
+
+// ─── Gemini Label Scanner ─────────────────────────────────────
+// Takes a photo of a box/label and extracts all firearm fields at once
+async function scanLabelPhoto(input) {
+  const file = input.files[0];
+  if (!file) return;
+  input.value = '';
+
+  const geminiKey = localStorage.getItem('armory_gemini_key') || '';
+  if (!geminiKey) {
+    showKeySetup(true);
+    showToast('⚠ Set your Gemini API key first (⚙️ button)');
+    return;
+  }
+
+  const statusEl = document.getElementById('labelScanStatus');
+  if (statusEl) statusEl.innerHTML = '<span class="loading-spin"></span> Scanning label…';
+
+  try {
+    // Compress before sending
+    const compressed = await riCompressImage(file, 1600, 0.88);
+    const b64 = compressed.split(',')[1];
+    const mediaType = detectMediaType(b64);
+
+    const prompt = `You are a firearms label and box expert. Analyze this image of a firearm box, label, or tag.
+
+Extract every piece of information visible. Labels may contain multiple barcodes — identify each one's purpose (UPC/EAN barcode = product identifier, serial number barcode = individual unit ID, SKU/MPN = manufacturer part number).
+
+Return ONLY raw JSON, no markdown, no backticks:
+{
+  "name": "Full firearm model name as printed (e.g. Glock 19 Gen5 MOS)",
+  "manufacturer": "Brand name only (e.g. Glock, Smith & Wesson, Beretta)",
+  "serial": "Serial number exactly as printed — check for SER#, S/N, Serial No labels",
+  "upc": "UPC/EAN barcode digits — usually 12-13 digits under a barcode labeled UPC",
+  "mpn": "Manufacturer part/model number — SKU, Item#, Part#, MPN labels",
+  "caliber": "Caliber (e.g. 9mm, .45 ACP, 5.56 NATO, 500 S&W)",
+  "gunType": "One of: Handgun, Revolver, Rifle, Shotgun, Bolt Action, Lever Action, Bullpup, PCC, AR Pistol, Suppressor, Optic, Accessory, Other",
+  "barrelLength": "Barrel length if shown (e.g. 4, 4.25, 16)",
+  "confidence": "high, medium, or low",
+  "notes": "Any other useful info visible (date, finish, capacity, etc)"
+}
+
+Use "" for any field not clearly visible. NEVER guess a serial number.`;
+
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`;
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [
+          { inline_data: { mime_type: mediaType, data: b64 } },
+          { text: prompt }
+        ]}],
+        generationConfig: { responseMimeType: 'application/json', temperature: 0.1 }
+      })
+    });
+
+    const respData = await resp.json();
+    if (respData.error) throw new Error(respData.error.message || 'Gemini error');
+
+    const raw = respData.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    let p = {};
+    try {
+      const clean = raw.replace(/```json|```/g, '').trim();
+      const s = clean.indexOf('{'), e = clean.lastIndexOf('}');
+      if (s !== -1 && e > s) p = JSON.parse(clean.substring(s, e + 1));
+    } catch(err) { console.error('Label parse error:', err, raw); }
+
+    if (statusEl) statusEl.textContent = '';
+
+    if (!p || Object.keys(p).length === 0) {
+      showToast('⚠ Could not read label — try better lighting');
+      return;
+    }
+
+    // Show review dialog — let user pick what to apply to the modal fields
+    showLabelReview(p);
+
+  } catch(err) {
+    if (statusEl) statusEl.textContent = '⚠ ' + (err.message || 'Scan failed');
+    console.error('Label scan error:', err);
+    showToast('❌ Label scan failed: ' + (err.message || '').substring(0, 50));
+  }
+}
+
+function showLabelReview(p) {
+  const existing = document.getElementById('labelReviewDlg');
+  if (existing) existing.remove();
+
+  // Current modal values
+  const cur = {
+    name:         document.getElementById('fName')?.value || '',
+    manufacturer: document.getElementById('fManufacturer')?.value || '',
+    serial:       document.getElementById('fSerial')?.value || '',
+    upc:          document.getElementById('fUPC')?.value || '',
+    mpn:          document.getElementById('fMPN')?.value || '',
+    caliber:      document.getElementById('fCaliber')?.value || '',
+    gunType:      document.getElementById('fGunType')?.value || '',
+  };
+
+  const fields = [
+    { key: 'name',         label: 'Model Name',    elId: 'fName'         },
+    { key: 'manufacturer', label: 'Manufacturer',  elId: 'fManufacturer' },
+    { key: 'serial',       label: 'Serial #',      elId: 'fSerial'       },
+    { key: 'upc',          label: 'UPC',           elId: 'fUPC'          },
+    { key: 'mpn',          label: 'MPN / SKU',     elId: 'fMPN'          },
+    { key: 'caliber',      label: 'Caliber',       elId: 'fCaliber'      },
+    { key: 'gunType',      label: 'Type',          elId: 'fGunType'      },
+  ];
+
+  const relevant = fields.filter(f => p[f.key] && p[f.key].toString().length > 0);
+  if (!relevant.length) { showToast('No data found in label'); return; }
+
+  const dlg = document.createElement('div');
+  dlg.id = 'labelReviewDlg';
+  dlg.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
+
+  const box = document.createElement('div');
+  box.style.cssText = 'background:var(--surface);border-radius:14px;padding:22px;max-width:500px;width:100%;max-height:88vh;overflow-y:auto;box-shadow:0 8px 40px rgba(0,0,0,0.35);border-top:4px solid var(--accent2);';
+
+  // Header
+  const header = document.createElement('div');
+  header.innerHTML = `
+    <div style="font-size:16px;font-weight:700;color:var(--accent);margin-bottom:3px;">📋 Label Scan Results</div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:14px;">Confidence: <strong style="color:${p.confidence==='high'?'var(--green)':p.confidence==='medium'?'#f59e0b':'var(--red)'}">${p.confidence||'unknown'}</strong>${p.notes ? ' — ' + escHtml(p.notes) : ''}</div>
+    <div style="display:grid;grid-template-columns:90px 1fr 1fr;gap:5px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:var(--muted);padding:0 4px;margin-bottom:6px;">
+      <div>Field</div><div>Current</div><div>Scanned</div>
+    </div>`;
+  box.appendChild(header);
+
+  const rowsEl = document.createElement('div');
+  const checkboxes = [];
+
+  relevant.forEach(f => {
+    const curVal = cur[f.key] || '';
+    const newVal = (p[f.key] || '').toString().trim();
+    const same = newVal.toLowerCase() === curVal.toLowerCase();
+
+    const row = document.createElement('div');
+    row.style.cssText = `display:grid;grid-template-columns:90px 1fr 1fr;gap:5px;align-items:center;padding:7px 4px;border-radius:6px;margin-bottom:3px;background:${same?'transparent':'rgba(37,99,168,0.05)'};`;
+
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = !same && !!newVal;
+    cb.dataset.elId = f.elId;
+    cb.dataset.value = newVal;
+    cb.style.cssText = 'width:15px;height:15px;accent-color:var(--accent);cursor:pointer;';
+    checkboxes.push(cb);
+
+    const labelDiv = document.createElement('div');
+    labelDiv.style.cssText = 'font-size:11px;font-weight:600;color:var(--muted);display:flex;align-items:center;gap:5px;';
+    labelDiv.appendChild(cb);
+    labelDiv.append(f.label);
+
+    const curDiv = document.createElement('div');
+    curDiv.style.cssText = 'font-size:11px;color:var(--text);font-family:monospace;word-break:break-all;';
+    curDiv.textContent = curVal || '—';
+
+    const newDiv = document.createElement('div');
+    newDiv.style.cssText = `font-size:11px;font-family:monospace;word-break:break-all;font-weight:${same?'400':'600'};color:${same?'var(--muted)':'var(--accent2)'};`;
+    newDiv.textContent = newVal || '—';
+
+    row.appendChild(labelDiv);
+    row.appendChild(curDiv);
+    row.appendChild(newDiv);
+    rowsEl.appendChild(row);
+  });
+  box.appendChild(rowsEl);
+
+  // Buttons
+  const btnRow = document.createElement('div');
+  btnRow.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;margin-top:18px;flex-wrap:wrap;';
+
+  const keepBtn = document.createElement('button');
+  keepBtn.textContent = 'Keep Current';
+  keepBtn.style.cssText = 'padding:8px 14px;border-radius:6px;border:1px solid var(--border);background:none;color:var(--text);cursor:pointer;font-size:13px;';
+  keepBtn.onclick = () => dlg.remove();
+
+  const applyBtn = document.createElement('button');
+  applyBtn.textContent = 'Apply Selected ✓';
+  applyBtn.style.cssText = 'padding:8px 16px;border-radius:6px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:13px;font-weight:600;';
+  applyBtn.onclick = () => {
+    let applied = [];
+    checkboxes.forEach(cb => {
+      if (!cb.checked || !cb.dataset.value) return;
+      const el = document.getElementById(cb.dataset.elId);
+      if (el) {
+        el.value = cb.dataset.elId === 'fUPC'
+          ? cb.dataset.value.replace(/[^0-9]/g, '')
+          : cb.dataset.value;
+        applied.push(cb.dataset.elId.replace('f',''));
+      }
+    });
+    dlg.remove();
+    showToast(applied.length ? '✅ Applied: ' + applied.join(', ') : 'Nothing selected');
+    // Auto-trigger AI lookup if UPC was applied and no name yet
+    const nameEl = document.getElementById('fName');
+    const upcEl = document.getElementById('fUPC');
+    if (upcEl?.value && (!nameEl?.value || applied.includes('UPC'))) {
+      setTimeout(() => manualLookup('upc'), 300);
+    }
+  };
+
+  btnRow.appendChild(keepBtn);
+  btnRow.appendChild(applyBtn);
+  box.appendChild(btnRow);
+  dlg.appendChild(box);
+  dlg.onclick = e => { if (e.target === dlg) dlg.remove(); };
+  document.body.appendChild(dlg);
+}
 
 function openBarcodeScanner() {
   // Create scanner overlay
