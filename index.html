@@ -5159,6 +5159,9 @@ function riLoadCurrentFirearm() {
   const counterEl = document.getElementById('riFirearmCounter');
   if (counterEl) counterEl.textContent = total > 1 ? `Firearm ${_riCurrentIndex + 1} of ${total}` : '';
 
+  // CRITICAL: Reset match selection so next firearm starts fresh
+  _riSelectedMatchId = undefined;
+
   // Always clear all fields before loading next firearm
   // (setIfEmpty caused items 2-4 to show item 1's data since fields weren't empty)
   ['riName','riManufacturer','riSerial','riUPC','riMPN','riCaliber',
@@ -5325,6 +5328,42 @@ function riGatherCurrentFields() {
   }
 }
 
+// Load next firearm's data and go straight to match step
+function riLoadCurrentFirearmAndMatch() {
+  const f = _riFirearms[_riCurrentIndex];
+  if (!f) { riGoStep(5); return; }
+
+  const total = _riFirearms.length;
+  const counterEl = document.getElementById('riFirearmCounter');
+  if (counterEl) counterEl.textContent = total > 1 ? `Firearm ${_riCurrentIndex + 1} of ${total}` : '';
+
+  // Reset match selection
+  _riSelectedMatchId = undefined;
+
+  // Clear and fill all fields fresh
+  ['riName','riManufacturer','riSerial','riUPC','riMPN','riCaliber',
+   'riPrice','riDate','riFflFee','riPickupDate','riActualPrice','riActualDate'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.value = '';
+  });
+
+  const _set = (id, val) => { const el = document.getElementById(id); if (el && val) el.value = val; };
+  _set('riName', f.name);
+  _set('riManufacturer', f.manufacturer);
+  _set('riSerial', f.serial);
+  _set('riUPC', f.upc);
+  _set('riMPN', f.mpn);
+  _set('riCaliber', f.caliber);
+  riApplyReceiptType(f.receiptType || 'purchase', f);
+
+  // Update preview image counter
+  const raw3 = document.getElementById('riRawText3');
+  if (raw3) raw3.style.display = 'none';
+
+  // Go straight to match step with this firearm's data
+  riGoMatchStep();
+}
+
 function riRescan() {
   // Keep the image, just re-run the AI scan without going back to step 1
   if (!_riImageBase64) { riGoStep(1); return; }
@@ -5478,8 +5517,12 @@ function riConfirmMatch() {
   _riCurrentIndex++;
   if (_riCurrentIndex < _riFirearms.length) {
     const remaining = _riFirearms.length - _riCurrentIndex;
-    document.getElementById('riDoneSub').textContent += ` — Loading next firearm (${remaining} remaining)…`;
-    setTimeout(() => riLoadCurrentFirearm(), 1600);
+    document.getElementById('riDoneSub').textContent += ` — Loading firearm ${_riCurrentIndex + 1} of ${_riFirearms.length} (${remaining} remaining)…`;
+    setTimeout(() => {
+      // Load the next firearm's fields then auto-advance to match step
+      // (no need to show step 3 review again — data already extracted from receipt)
+      riLoadCurrentFirearmAndMatch();
+    }, 1800);
   } else {
     riGoStep(5);
   }
