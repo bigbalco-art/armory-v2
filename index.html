@@ -2465,12 +2465,17 @@ let   _vsObs   = null;
 function saveAll() {
   // Debounce — don't spam Firebase on rapid edits
   const now = Date.now();
-  if(now - _lastSave < 1000) {
+  if(now - _lastSave < 1500) {
     clearTimeout(_saveTimer);
-    _saveTimer = setTimeout(saveAll, 1100);
+    _saveTimer = setTimeout(saveAll, 1600);
     return;
   }
   _lastSave = now;
+  // Keep searchKeywords in sync for flexible client-side search
+  data.forEach(d => {
+    d.searchKeywords = [d.name, d.manufacturer, d.serial, d.upc, d.mpn, d.caliber, d.gunType]
+      .filter(Boolean).map(v => v.toLowerCase()).join(' ');
+  });
   // Save to localStorage immediately (instant, no network needed)
   localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
   // Save to Firebase (cloud sync for all devices)
@@ -2516,12 +2521,16 @@ function locationBadge(l) {
 
 let filtered = [];
 function filterTable() {
-  const q = document.getElementById('searchInput').value.toLowerCase();
+  const q = document.getElementById('searchInput').value.toLowerCase().trim();
   const st = document.getElementById('filterStatus').value;
   const loc = document.getElementById('filterLocation').value;
   const pic = document.getElementById('filterPic').value;
   filtered = data.filter(d => {
-    if(q && !d.name.toLowerCase().includes(q) && !(d.notes||'').toLowerCase().includes(q) && !(d.description||'').toLowerCase().includes(q)) return false;
+    if(q) {
+      // Use pre-built searchKeywords when available (name+mfr+serial+upc+mpn+caliber+type)
+      const hay = d.searchKeywords || [d.name, d.manufacturer, d.serial, d.upc, d.mpn, d.caliber, d.gunType, d.notes, d.description].filter(Boolean).join(' ').toLowerCase();
+      if(!hay.includes(q)) return false;
+    }
     if(st && d.status!==st) return false;
     if(loc && d.location!==loc) return false;
     if(pic==='yes' && !d.needPic) return false;
@@ -4146,16 +4155,28 @@ let marketCancelled = false;
 
 function cancelMarketLookup() {
   marketCancelled = true;
-  document.getElementById('bulkProgressOverlay').classList.remove('open');
+  // Don't close overlay — show cancelled state so user sees what completed
+  const cancelBtn = document.getElementById('bulkCancelBtn');
+  const doneBtn = document.getElementById('bulkDoneBtn');
+  if (cancelBtn) cancelBtn.style.display = 'none';
+  if (doneBtn) doneBtn.style.display = '';
+  const statusText = document.getElementById('bulkStatusText');
+  if (statusText) statusText.textContent = 'Cancelling after current batch…';
 }
 
 async function startMarketValueLookup() {
   setBusy(true);
   // Only look up owned firearms with a purchase price
-  const targets = data.filter(d =>
-    (d.status === 'owned' || d.status === 'new') &&
-    d.purchasePrice
-  );
+  const FRESH_DAYS = 30; // skip entries updated within this many days
+  const now = Date.now();
+  const allOwned = data.filter(d => (d.status === 'owned' || d.status === 'new') && d.purchasePrice);
+  const targets = allOwned.filter(d => {
+    if (!d.marketUpdated) return true; // never looked up
+    const updated = new Date(d.marketUpdated).getTime();
+    const daysSince = (now - updated) / 86400000;
+    return daysSince > FRESH_DAYS; // only re-run if stale
+  });
+  const skipped = allOwned.length - targets.length;
 
   if(!targets.length) {
     showToast('No owned firearms with purchase prices found!');
@@ -4170,8 +4191,8 @@ async function startMarketValueLookup() {
       <div style="background:var(--surface);border-radius:12px;padding:26px;max-width:400px;width:92%;box-shadow:0 8px 32px rgba(0,0,0,0.2);border-top:4px solid var(--green);">
         <div style="font-size:17px;font-weight:700;margin-bottom:6px;">💰 Market Value Lookup</div>
         <div style="color:var(--muted);font-size:13px;margin-bottom:18px;line-height:1.6;">
-          Will estimate current market value for <strong style="color:var(--text)">${targets.length} owned firearms</strong>.<br><br>
-          Results are AI estimates based on recent sales data — not guaranteed prices. Best for common production models.
+          Will estimate current market value for <strong style="color:var(--text)">${targets.length} owned firearms</strong>${skipped > 0 ? ` — <span style="color:var(--green)">${skipped} already fresh (updated within ${FRESH_DAYS} days), skipping</span>` : ''}.<br><br>
+          Results are AI estimates based on recent sales data — not guaranteed prices. Values auto-expire after ${FRESH_DAYS} days and will be re-run next time.
         </div>
         <div style="display:flex;gap:10px;justify-content:flex-end;">
           <button id="mvNo" class="btn btn-ghost">Cancel</button>
