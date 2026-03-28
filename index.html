@@ -2353,6 +2353,9 @@ function showLookupReview(idx, p) {
   const relevant = fields.filter(f => p[f.pKey] && p[f.pKey].toString().length > 0);
   if (!relevant.length) { showToast('No new data found'); return; }
 
+  // Show serial model note if Gemini identified the variant from serial
+  const serialNote = p.serialModelNote || '';
+
   const dlg = document.createElement('div');
   dlg.id = 'lookupReviewDlg';
   dlg.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px;';
@@ -2362,7 +2365,8 @@ function showLookupReview(idx, p) {
 
   box.innerHTML = `
     <div style="font-size:16px;font-weight:700;color:var(--accent);margin-bottom:4px;">🔍 AI Lookup Results</div>
-    <div style="font-size:12px;color:var(--muted);margin-bottom:16px;">${escHtml(entry.name)} — check each field and choose what to keep</div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:${serialNote?'6px':'16px'};">${escHtml(entry.name)} — check each field and choose what to keep</div>
+    ${serialNote ? `<div style="font-size:11px;background:rgba(37,99,168,0.07);border:1px solid rgba(37,99,168,0.2);border-radius:6px;padding:6px 10px;color:var(--accent2);margin-bottom:12px;">🔍 Serial ID: ${escHtml(serialNote)}</div>` : ''}
     <div style="display:flex;gap:10px;margin-bottom:10px;flex-wrap:wrap;">
       <span style="font-size:11px;padding:2px 8px;border-radius:4px;background:rgba(22,163,74,0.1);color:#16a34a;">🟢 Empty — safe to fill</span>
       <span style="font-size:11px;padding:2px 8px;border-radius:4px;background:rgba(245,158,11,0.1);color:#d97706;">🟡 Has data — review carefully</span>
@@ -3648,11 +3652,13 @@ async function lookupByUPC(id, upcVal) {
   // Safety timeout - release lock after 30 seconds no matter what
   const lockTimer = setTimeout(() => { _aiSearching = false; }, 30000);
   try {
-    const prompt = `You are a firearms expert. For the firearm with UPC: "${upcVal}" (name: "${entry.name}"), return ONLY this JSON with no markdown or explanation:
-{"official_name":"","manufacturer":"","mpn":"","description":"","gunType":"","caliber":""}
-gunType must be exactly one of: Handgun, Revolver, Rifle, Shotgun, Bolt Action, Lever Action, Bullpup, PCC, AR Pistol, Suppressor, Optic, Accessory, Other
-caliber example: 9mm, .45 ACP, 12 Gauge, 5.56 NATO
-manufacturer example: Glock, Smith & Wesson, Heckler & Koch, Colt`;
+    const serialNote2 = entry.serial ? ` Serial "${entry.serial}" — use prefix to confirm this is the right variant for the UPC.` : '';
+    const prompt = `You are a firearms product database expert. For the firearm with UPC: "${upcVal}"
+Name: "${entry.name}", Manufacturer: "${entry.manufacturer || 'unknown'}".${serialNote2}
+
+Return ONLY this JSON with no markdown:
+{"official_name":"","manufacturer":"","mpn":"","description":"","gunType":"","caliber":"","serialModelNote":"what serial prefix confirms"}
+gunType: Handgun|Revolver|Rifle|Shotgun|Bolt Action|Lever Action|Bullpup|PCC|AR Pistol|Suppressor|Optic|Accessory|Other`;
     const text = await callClaude(prompt);
     let p = {};
     try { p = JSON.parse(text.replace(/```json|```/g,'').trim()); } catch(e) {}
@@ -3675,8 +3681,15 @@ async function lookupByMPN(id, mpnVal) {
   _aiSearching = true;
   const lockTimer = setTimeout(() => { _aiSearching = false; }, 30000);
   try {
-    const prompt = `Firearm MPN: "${mpnVal}", Name: "${entry.name}". Return ONLY JSON no markdown:
-{"official_name":"","manufacturer":"","upc":"exact 12-digit UPC or empty string","caliber":"e.g. 9mm","gunType":"Handgun|Revolver|Rifle|Shotgun|Bolt Action|Lever Action|Bullpup|PCC|AR Pistol|Suppressor|Optic|Accessory|Other","description":"brief: action, barrel, capacity"}`;
+    const serialNote = entry.serial ? ` Serial: "${entry.serial}" — use prefix to confirm exact variant.` : '';
+    const prompt = `You are a firearms product database expert. Identify this firearm and find its UPC.
+MPN/SKU: "${mpnVal}"
+Name: "${entry.name}"
+Manufacturer: "${entry.manufacturer || 'unknown'}"
+Caliber: "${entry.caliber || 'unknown'}"${serialNote}
+
+The MPN and serial together should uniquely identify the exact product. Return ONLY JSON, no markdown:
+{"official_name":"","manufacturer":"","upc":"exact 12-digit UPC or empty string if not certain","caliber":"e.g. 9mm","gunType":"Handgun|Revolver|Rifle|Shotgun|Bolt Action|Lever Action|Bullpup|PCC|AR Pistol|Suppressor|Optic|Accessory|Other","description":"brief: action, barrel, capacity","serialModelNote":"what the serial prefix confirms about the model"}`;
     const text = await callClaude(prompt);
     let p = {};
     try { p = JSON.parse(text.replace(/```json|```/g,'').trim()); } catch(e) {}
@@ -3708,13 +3721,26 @@ async function lookupUPC(id) {
   const btn = document.getElementById("upcbtn-"+id);
   if(btn) btn.innerHTML = '<span class="loading-spin"></span> Searching...';
   try {
-    const hint = entry.mpn ? `MPN: "${entry.mpn}"` : `Name: "${entry.name}"`;
-    const prompt = `You are a firearms expert. For this firearm — ${hint} (name: "${entry.name}"), return ONLY this JSON with no markdown or explanation:
-{"upc":"","official_name":"","manufacturer":"","mpn":"","description":"","gunType":"","caliber":""}
-upc: exact 12-digit UPC barcode — leave empty string if not 100% certain
-gunType must be exactly one of: Handgun, Revolver, Rifle, Shotgun, Bolt Action, Lever Action, Bullpup, PCC, AR Pistol, Suppressor, Optic, Accessory, Other
-caliber example: 9mm, .45 ACP, 12 Gauge, 5.56 NATO
-manufacturer example: Glock, Smith & Wesson, Heckler & Koch, Colt`;
+    const serialHint = entry.serial ? `\nSerial number: "${entry.serial}" — use the serial PREFIX to identify the exact model/variant/generation. Each manufacturer has documented serial ranges.` : '';
+    const prompt = `You are a firearms UPC and product database expert with deep knowledge of manufacturer serial number formats.
+
+Firearm to identify:
+- Name: "${entry.name}"
+- Manufacturer: "${entry.manufacturer || 'unknown'}"
+- MPN: "${entry.mpn || 'unknown'}"
+- Caliber: "${entry.caliber || 'unknown'}"${serialHint}
+
+Serial number prefixes are manufacturer-specific and identify exact models:
+- Glock: prefix identifies generation and model (e.g. BFXX=G19 Gen5, AFXX=G17 Gen5)
+- Smith & Wesson: prefix identifies model family and year
+- Beretta: prefix identifies production run and model
+- Sig Sauer: prefix identifies model variant
+- Use the serial to resolve the exact variant before looking up the UPC.
+
+Return ONLY this JSON, no markdown:
+{"upc":"","official_name":"","manufacturer":"","mpn":"","description":"","gunType":"","caliber":"","serialModelNote":"brief note on what serial prefix reveals about the model"}
+upc: exact 12-digit UPC — empty string if not 100% certain
+gunType: Handgun|Revolver|Rifle|Shotgun|Bolt Action|Lever Action|Bullpup|PCC|AR Pistol|Suppressor|Optic|Accessory|Other`;
     const text = await callClaude(prompt);
     let p = {};
     try { p = JSON.parse(text.replace(/```json|```/g,'').trim()); } catch(e) {}
