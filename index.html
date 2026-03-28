@@ -1136,10 +1136,16 @@
         <!-- Scan Label button -->
         <div style="flex:1;min-width:200px;">
           <div style="font-family:'JetBrains Mono',monospace;font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);margin-bottom:6px;">📋 Label / Box Scan</div>
-          <label style="display:inline-flex;align-items:center;gap:6px;padding:8px 14px;background:rgba(37,99,168,0.08);border:1px solid var(--accent2);color:var(--accent2);border-radius:7px;cursor:pointer;font-size:13px;font-weight:500;">
-            📷 Scan Label
-            <input type="file" id="labelScanInput" accept="image/*" style="display:none" onchange="scanLabelPhoto(this)">
-          </label>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;">
+            <label style="display:inline-flex;align-items:center;gap:6px;padding:8px 14px;background:rgba(37,99,168,0.08);border:1px solid var(--accent2);color:var(--accent2);border-radius:7px;cursor:pointer;font-size:13px;font-weight:500;">
+              📷 Camera
+              <input type="file" id="labelScanInput" accept="image/*" capture="environment" style="display:none" onchange="scanLabelPhoto(this)">
+            </label>
+            <label style="display:inline-flex;align-items:center;gap:6px;padding:8px 14px;background:rgba(37,99,168,0.05);border:1px solid var(--border);color:var(--muted);border-radius:7px;cursor:pointer;font-size:13px;font-weight:500;">
+              🖼 Gallery
+              <input type="file" id="labelScanInputGallery" accept="image/*" style="display:none" onchange="scanLabelPhoto(this)">
+            </label>
+          </div>
           <div id="labelScanStatus" style="font-size:11px;color:var(--muted);margin-top:5px;min-height:16px;"></div>
         </div>
         <!-- Photo upload -->
@@ -1196,7 +1202,7 @@
             style="flex:1;font-family:'JetBrains Mono',monospace;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:9px 10px;border-radius:6px;font-size:13px;outline:none;" />
           <button type="button" class="btn btn-ghost btn-sm" onclick="manualLookup('upc')">🔍 Search</button>
           <label class="btn btn-ghost btn-sm" style="cursor:pointer;" title="Scan box/label to fill UPC and all fields">📷 Scan
-            <input type="file" id="labelScanInputUPC" accept="image/*" style="display:none" onchange="scanLabelPhoto(this)">
+            <input type="file" id="labelScanInputUPC" accept="image/*" capture="environment" style="display:none" onchange="scanLabelPhoto(this)">
           </label>
         </div>
       </div>
