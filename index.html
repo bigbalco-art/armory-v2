@@ -1989,53 +1989,16 @@ function triggerPhotoUpload(id) {
   if(input) input.click();
 }
 
-// ─── EXIF orientation reader ─────────────────────────────────
-function getExifOrientation(file) {
-  return new Promise(resolve => {
-    const reader = new FileReader();
-    reader.onload = e => {
-      const view = new DataView(e.target.result);
-      if (view.getUint16(0, false) !== 0xFFD8) return resolve(1);
-      let offset = 2;
-      while (offset < view.byteLength) {
-        if (view.getUint16(offset, false) === 0xFFE1) {
-          const exifLen = view.getUint16(offset + 2, false);
-          const exif = new DataView(e.target.result, offset + 4, exifLen - 2);
-          const little = exif.getUint16(6, false) === 0x4949;
-          const tags = exif.getUint32(10, little);
-          for (let i = 0; i < tags; i++) {
-            if (exif.getUint16(12 + i * 12, little) === 0x0112) {
-              return resolve(exif.getUint16(12 + i * 12 + 8, little));
-            }
-          }
-          return resolve(1);
-        }
-        offset += 2 + view.getUint16(offset + 2, false);
-      }
-      resolve(1);
-    };
-    reader.onerror = () => resolve(1);
-    reader.readAsArrayBuffer(file.slice(0, 64 * 1024));
-  });
-}
-
-// Draw image onto canvas with EXIF correction + landscape enforcement
-// Simple, reliable: one translate+rotate per transformation needed
-function drawOriented(ctx, img, orient, canvasW, canvasH) {
-  ctx.save();
-  // EXIF orientation corrections — standard mapping
-  switch(orient) {
-    case 2: ctx.transform(-1,0,0,1,canvasW,0); break;
-    case 3: ctx.transform(-1,0,0,-1,canvasW,canvasH); break;
-    case 4: ctx.transform(1,0,0,-1,0,canvasH); break;
-    case 5: ctx.transform(0,1,1,0,0,0); break;
-    case 6: ctx.transform(0,1,-1,0,canvasH,0); break;
-    case 7: ctx.transform(0,-1,-1,0,canvasW,canvasH); break; // was canvasH,canvasW
-    case 8: ctx.transform(0,-1,1,0,0,canvasW); break;
-    default: break; // orient 1 = normal
+// ─── Photo orientation helper ────────────────────────────────
+// Uses browser-native EXIF handling via createImageBitmap — no matrix math
+async function getOrientedBitmap(file) {
+  try {
+    // imageOrientation:'from-image' tells browser to apply EXIF automatically
+    return await createImageBitmap(file, { imageOrientation: 'from-image' });
+  } catch(e) {
+    // Fallback for older browsers
+    return await createImageBitmap(file);
   }
-  ctx.drawImage(img, 0, 0);
-  ctx.restore();
 }
 
 async function handlePhotoUpload(id, input) {
@@ -2045,136 +2008,146 @@ async function handlePhotoUpload(id, input) {
   setBusy(true);
   showToast('⏳ Sizing down & uploading...');
 
-  // Read EXIF orientation before loading image
-  const exifOrient = await getExifOrientation(file);
+  // Get EXIF-corrected bitmap — browser handles orientation natively
+  const bitmap = await getOrientedBitmap(file);
 
-  const reader = new FileReader();
-  reader.onload = function(e) {
-    const img = new Image();
-    img.onload = function() {
-      const MAX = 800;
-      const orient = exifOrient || 1;
-      // For EXIF 5-8 the sensor was rotated 90°, so natural dims are swapped
-      const swapped = orient >= 5 && orient <= 8;
-      // "Corrected" dimensions = what the image looks like right-side-up
-      const corrW = swapped ? img.height : img.width;
-      const corrH = swapped ? img.width  : img.height;
+  // bitmap dimensions are already correct (EXIF applied)
+  // If portrait, rotate 90° CCW so barrel faces left, grip right
+  const MAX = 800;
+  const isPortrait = bitmap.height > bitmap.width;
+  let outW = isPortrait ? bitmap.height : bitmap.width;
+  let outH = isPortrait ? bitmap.width  : bitmap.height;
 
-      // Force landscape: if portrait after correction, rotate 90° CCW
-      // This puts the barrel on the left and grip on the right
-      const forceLandscape = corrH > corrW;
-      // Final output dimensions
-      let outW = forceLandscape ? corrH : corrW;
-      let outH = forceLandscape ? corrW : corrH;
+  // Scale to MAX on longest side
+  if(outW > MAX) { outH = Math.round(outH * MAX / outW); outW = MAX; }
+  if(outH > MAX) { outW = Math.round(outW * MAX / outH); outH = MAX; }
 
-      // Scale down to MAX on longest side
-      if(outW > MAX) { outH = Math.round(outH * MAX / outW); outW = MAX; }
-      if(outH > MAX) { outW = Math.round(outW * MAX / outH); outH = MAX; }
+  const canvas = document.createElement('canvas');
+  canvas.width  = outW;
+  canvas.height = outH;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, outW, outH);
 
-      const canvas = document.createElement('canvas');
-      canvas.width  = outW;
-      canvas.height = outH;
-      const ctx = canvas.getContext('2d');
-      ctx.fillStyle = '#000'; // explicit background prevents transparency artifacts
-      ctx.fillRect(0, 0, outW, outH);
+  if (isPortrait) {
+    // Rotate 90° CCW: translate to bottom-left, rotate, draw
+    ctx.save();
+    ctx.translate(0, outH);
+    ctx.rotate(-Math.PI / 2);
+    // Draw the bitmap scaled into the rotated space
+    ctx.drawImage(bitmap, 0, 0, bitmap.width, bitmap.height,
+                           0, 0, outH, outW);
+    ctx.restore();
+  } else {
+    ctx.drawImage(bitmap, 0, 0, outW, outH);
+  }
+  bitmap.close(); // free GPU memory
 
-      if (forceLandscape) {
-        // Rotate 90° CCW on top of EXIF correction:
-        // translate to new origin, rotate, then draw with EXIF fix
-        // Build a temp canvas with the EXIF-corrected (portrait) image first
-        const tmpW = corrW > 1600 ? 1600 : corrW;
-        const tmpH = Math.round(corrH * tmpW / corrW);
-        const tmp = document.createElement('canvas');
-        tmp.width  = swapped ? tmpH : tmpW; // raw canvas dims match sensor orientation
-        tmp.height = swapped ? tmpW : tmpH;
-        const tctx = tmp.getContext('2d');
-        drawOriented(tctx, img, orient, tmp.width, tmp.height);
-
-        // Now rotate that corrected portrait image 90° CCW onto final canvas
-        ctx.save();
-        ctx.translate(0, outH);
-        ctx.rotate(-Math.PI / 2);
-        ctx.drawImage(tmp, 0, 0, tmpW, tmpH, 0, 0, outH, outW);
-        ctx.restore();
-      } else {
-        // No landscape rotation needed — just apply EXIF correction
-        const rawW = swapped ? img.height : img.width;
-        const rawH = swapped ? img.width  : img.height;
-        const tmpCanvas = document.createElement('canvas');
-        tmpCanvas.width  = img.width;
-        tmpCanvas.height = img.height;
-        drawOriented(tmpCanvas.getContext('2d'), img, orient, img.width, img.height);
-        ctx.drawImage(tmpCanvas, 0, 0, outW, outH);
+  // No FileReader needed — go straight to blob
+  canvas.toBlob(async (blob) => {
+    try {
+      const storageRef = firebase.storage().ref(`firearms/${id}.jpg`);
+      const snapshot = await storageRef.put(blob);
+      const downloadURL = await snapshot.ref.getDownloadURL();
+      const idx = data.findIndex(d => d.id === id);
+      if(idx !== -1) {
+        data[idx].photoUrl = downloadURL;
+        data[idx].photo = '';
+        data[idx].needPic = false;
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+        if(window._fbSave) await window._fbSave(data);
+        filterTable();
+        showToast('✅ Photo synced to all devices!');
       }
-
-      canvas.toBlob(async (blob) => {
-        try {
-          // Upload compressed blob to Firebase Storage
-          const storageRef = firebase.storage().ref(`firearms/${id}.jpg`);
-          const snapshot = await storageRef.put(blob);
-          const downloadURL = await snapshot.ref.getDownloadURL();
-
-          // Save only the URL link into the entry — never the raw image data
-          const idx = data.findIndex(d => d.id === id);
-          if(idx !== -1) {
-            data[idx].photoUrl = downloadURL;
-            data[idx].photo = '';
-            data[idx].needPic = false;
-            localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-            if(window._fbSave) await window._fbSave(data);
-            filterTable();
-            showToast('✅ Photo synced to all devices!');
-          }
-        } catch(error) {
-          console.error('Upload error:', error.code, error.message);
-          if(error.code === 'storage/unauthorized') {
-            showToast('❌ Permission denied — update Firebase Storage rules');
-          } else {
-            showToast('❌ Upload failed: ' + error.message.substring(0,60));
-          }
-        } finally {
-          window._syncPaused = false;
-          setBusy(false);
-        }
-      }, 'image/jpeg', 0.7);
-    };
-    img.onerror = () => { setBusy(false); window._syncPaused = false; showToast('❌ Could not read image'); };
-    img.src = e.target.result;
-  };
-  reader.onerror = () => { setBusy(false); window._syncPaused = false; showToast('❌ Could not read file'); };
-  reader.readAsDataURL(file);
+    } catch(error) {
+      console.error('Upload error:', error.code, error.message);
+      if(error.code === 'storage/unauthorized') {
+        showToast('❌ Permission denied — update Firebase Storage rules');
+      } else {
+        showToast('❌ Upload failed: ' + error.message.substring(0,60));
+      }
+    } finally {
+      window._syncPaused = false;
+      setBusy(false);
+    }
+  }, 'image/jpeg', 0.82);
 }
 
 function viewPhoto(id) {
-  const entry = data.find(d=>d.id===id);
-  if(!entry || (!entry.photo && !entry.photoUrl)) return;
+  const entry = data.find(d => d.id === id);
+  if (!entry || (!entry.photo && !entry.photoUrl)) return;
+
+  // Remove any existing overlay
+  const existing = document.getElementById('photoOverlay');
+  if (existing) existing.remove();
+
   const photoSrc = entry.photo || entry.photoUrl;
+
+  // Build overlay element — set id FIRST so inline handlers can find it
   const ov = document.createElement('div');
-  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.88);z-index:9999;display:flex;align-items:center;justify-content:center;';
-  ov.onclick = () => document.body.removeChild(ov);
-  ov.innerHTML = `
-    <div style="position:relative;max-width:94vw;max-height:94vh;display:flex;flex-direction:column;align-items:center;" onclick="event.stopPropagation()">
-      <img src="${photoSrc}" style="max-width:90vw;max-height:78vh;border-radius:10px;object-fit:contain;display:block;box-shadow:0 8px 32px rgba(0,0,0,0.5);">
-      <div style="display:flex;align-items:center;justify-content:space-between;width:100%;margin-top:12px;gap:8px;flex-wrap:wrap;">
-        <div style="color:rgba(255,255,255,0.75);font-size:13px;">${escHtml(entry.name)}</div>
-        <div style="display:flex;gap:8px;">
-          <label style="padding:7px 14px;background:rgba(255,255,255,0.12);border:1px solid rgba(255,255,255,0.25);color:#fff;border-radius:7px;cursor:pointer;font-size:12px;display:inline-flex;align-items:center;gap:5px;" title="Upload a replacement photo">
-            🔄 Replace
-            <input type="file" accept="image/*" style="display:none"
-              onchange="document.body.removeChild(document.getElementById('photoOverlay'));handlePhotoUpload(${id},this);">
-          </label>
-          <button onclick="if(confirm('Delete this photo?')){removePhoto(${id});document.body.removeChild(document.getElementById('photoOverlay'));}"
-            style="padding:7px 14px;background:#c0392b;color:#fff;border:none;border-radius:7px;cursor:pointer;font-size:12px;">
-            🗑️ Delete
-          </button>
-          <button onclick="document.body.removeChild(document.getElementById('photoOverlay'));"
-            style="padding:7px 14px;background:rgba(255,255,255,0.12);border:1px solid rgba(255,255,255,0.25);color:#fff;border-radius:7px;cursor:pointer;font-size:12px;">
-            ✕ Close
-          </button>
-        </div>
-      </div>
-    </div>`;
   ov.id = 'photoOverlay';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.88);z-index:9999;display:flex;align-items:center;justify-content:center;';
+
+  // Inner container — stop clicks here from closing overlay
+  const inner = document.createElement('div');
+  inner.style.cssText = 'display:flex;flex-direction:column;align-items:center;max-width:94vw;max-height:94vh;';
+  inner.onclick = e => e.stopPropagation();
+
+  // Photo
+  const img = document.createElement('img');
+  img.src = photoSrc;
+  img.style.cssText = 'max-width:90vw;max-height:72vh;border-radius:10px;object-fit:contain;display:block;box-shadow:0 8px 32px rgba(0,0,0,0.5);';
+  inner.appendChild(img);
+
+  // Button bar
+  const bar = document.createElement('div');
+  bar.style.cssText = 'display:flex;align-items:center;justify-content:space-between;width:100%;margin-top:14px;gap:10px;flex-wrap:wrap;';
+
+  const nameEl = document.createElement('div');
+  nameEl.style.cssText = 'color:rgba(255,255,255,0.75);font-size:13px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+  nameEl.textContent = entry.name;
+  bar.appendChild(nameEl);
+
+  const btnWrap = document.createElement('div');
+  btnWrap.style.cssText = 'display:flex;gap:8px;flex-shrink:0;';
+
+  const btnStyle = 'padding:8px 16px;border-radius:7px;cursor:pointer;font-size:13px;font-weight:500;border:none;';
+
+  // Replace button (label wrapping hidden file input)
+  const replaceLabel = document.createElement('label');
+  replaceLabel.style.cssText = btnStyle + 'background:rgba(255,255,255,0.15);color:#fff;border:1px solid rgba(255,255,255,0.3);display:inline-flex;align-items:center;gap:6px;';
+  replaceLabel.innerHTML = '🔄 Replace';
+  const replaceInput = document.createElement('input');
+  replaceInput.type = 'file';
+  replaceInput.accept = 'image/*';
+  replaceInput.style.display = 'none';
+  replaceInput.onchange = () => { ov.remove(); handlePhotoUpload(id, replaceInput); };
+  replaceLabel.appendChild(replaceInput);
+  btnWrap.appendChild(replaceLabel);
+
+  // Delete button
+  const delBtn = document.createElement('button');
+  delBtn.style.cssText = btnStyle + 'background:#c0392b;color:#fff;';
+  delBtn.innerHTML = '🗑️ Delete';
+  delBtn.onclick = () => {
+    if (confirm('Delete this photo?')) { removePhoto(id); ov.remove(); }
+  };
+  btnWrap.appendChild(delBtn);
+
+  // Close button
+  const closeBtn = document.createElement('button');
+  closeBtn.style.cssText = btnStyle + 'background:rgba(255,255,255,0.15);color:#fff;border:1px solid rgba(255,255,255,0.3);';
+  closeBtn.innerHTML = '✕ Close';
+  closeBtn.onclick = () => ov.remove();
+  btnWrap.appendChild(closeBtn);
+
+  bar.appendChild(btnWrap);
+  inner.appendChild(bar);
+  ov.appendChild(inner);
+
+  // Click backdrop to close
+  ov.onclick = () => ov.remove();
+
   document.body.appendChild(ov);
 }
 
