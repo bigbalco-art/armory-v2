@@ -126,25 +126,43 @@
       await auth.signInWithRedirect(provider);
     };
 
-    // onAuthStateChanged fires once on load — signed in or not
-    // Only dispatch firebase-ready ONCE when user is confirmed
-    let _appStarted = false;
-    auth.onAuthStateChanged(user => {
+    function launchApp(user) {
+      window._currentUID = user.uid;
+      window._currentUser = user;
       const screen = document.getElementById('signInScreen');
-      if (user) {
-        window._currentUID = user.uid;
-        window._currentUser = user;
-        if (screen) screen.style.display = 'none';
-        if (!_appStarted) {
-          _appStarted = true;
-          window._fbReady = true;
-          document.dispatchEvent(new Event('firebase-ready'));
-        }
+      if (screen) screen.style.display = 'none';
+      window._fbReady = true;
+      document.dispatchEvent(new Event('firebase-ready'));
+    }
+
+    // MUST check getRedirectResult first — this resolves the pending 
+    // redirect auth BEFORE onAuthStateChanged fires, preventing the loop
+    auth.getRedirectResult().then(result => {
+      if (result && result.user) {
+        // Just came back from Google redirect — launch app immediately
+        launchApp(result.user);
       } else {
-        // Not signed in yet — show sign-in screen
-        if (screen) screen.style.display = 'flex';
-        window._fbReady = false;
+        // No pending redirect — check if already signed in
+        auth.onAuthStateChanged(user => {
+          const screen = document.getElementById('signInScreen');
+          if (user) {
+            launchApp(user);
+          } else {
+            if (screen) screen.style.display = 'flex';
+          }
+        });
       }
+    }).catch(e => {
+      console.error('Redirect result error:', e);
+      // Fall through to normal auth state check
+      auth.onAuthStateChanged(user => {
+        const screen = document.getElementById('signInScreen');
+        if (user) {
+          launchApp(user);
+        } else {
+          if (screen) screen.style.display = 'flex';
+        }
+      });
     });
 
     // Don't dispatch firebase-ready here — onAuthStateChanged handles it

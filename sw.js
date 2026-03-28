@@ -4,14 +4,14 @@ const ASSETS = [
   '/armory-v2/index.html',
   '/armory-v2/manifest.json'
 ];
-// Pre-cache app shell on install
+
 self.addEventListener('install', e => {
   e.waitUntil(
     caches.open(CACHE_NAME).then(c => c.addAll(ASSETS))
   );
   self.skipWaiting();
 });
-// Clean up old caches
+
 self.addEventListener('activate', e => {
   e.waitUntil(
     caches.keys().then(keys =>
@@ -20,15 +20,22 @@ self.addEventListener('activate', e => {
   );
   self.clients.claim();
 });
-// Network first, fall back to cache
+
 self.addEventListener('fetch', e => {
-  // Don't intercept any external API calls
-  if (e.request.url.includes('firebase') ||
-      e.request.url.includes('googleapis') ||
-      e.request.url.includes('generativelanguage') ||
-      e.request.url.includes('api.anthropic.com')) {
+  const url = e.request.url;
+
+  // Never intercept these — must go directly to network
+  if (url.includes('firebase') ||
+      url.includes('googleapis') ||
+      url.includes('generativelanguage') ||
+      url.includes('firebaseapp.com') ||
+      url.includes('accounts.google.com') ||
+      url.includes('identitytoolkit') ||
+      url.includes('securetoken') ||
+      url.includes('api.anthropic.com')) {
     return;
   }
+
   e.respondWith(
     fetch(e.request)
       .then(res => {
