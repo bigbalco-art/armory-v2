@@ -27,34 +27,76 @@
     if(typeof firebase === 'undefined') throw new Error('Firebase SDK not loaded');
     firebase.initializeApp(firebaseConfig);
     const db = firebase.firestore();
-    const DOC_REF = db.collection("armory").doc("inventory");
+    // ─── Per-document Firestore (scalable, no 1MB limit) ──────────
+    // Each firearm = its own doc in armory/inventory/items/{id}
+    // Falls back gracefully if old single-doc data exists on first run
+    const COL_REF  = db.collection("armory").doc("inventory").collection("items");
+    const META_REF = db.collection("armory").doc("inventory");
 
     window._fbSave = async function(dataArr) {
       try {
-        // Strip photos before saving to Firebase (too large for Firestore 1MB limit)
-        // Photos are kept in localStorage only
-        const dataNoPhotos = dataArr.map(d => {
-          const copy = Object.assign({}, d);
-          if(copy.photo && copy.photo.length > 1000) delete copy.photo;
-          return copy;
+        const batch = db.batch();
+        const strip = d => {
+          const c = Object.assign({}, d);
+          // Never store base64 photos in Firestore
+          if (c.photo && c.photo.length > 500) delete c.photo;
+          return c;
+        };
+        dataArr.forEach(d => {
+          const ref = COL_REF.doc(String(d.id));
+          batch.set(ref, strip(d));
         });
-        await DOC_REF.set({ data: dataNoPhotos, updated: new Date().toISOString() });
+        // Write metadata (count + timestamp) to parent doc for quick checks
+        batch.set(META_REF, { count: dataArr.length, updated: new Date().toISOString() }, { merge: true });
+        await batch.commit();
         return true;
       } catch(e) {
         console.error("Firebase save error:", e);
+        // Batch limit is 500 writes — split if needed
+        if(e.code === 'resource-exhausted' || (e.message||'').includes('500')) {
+          try {
+            for(let i = 0; i < dataArr.length; i += 400) {
+              const chunk = dataArr.slice(i, i + 400);
+              const b2 = db.batch();
+              const strip = d => { const c = Object.assign({}, d); if(c.photo && c.photo.length > 500) delete c.photo; return c; };
+              chunk.forEach(d => b2.set(COL_REF.doc(String(d.id)), strip(d)));
+              await b2.commit();
+            }
+            return true;
+          } catch(e2) { console.error("Chunked save error:", e2); return false; }
+        }
         return false;
       }
     };
 
+    window._fbDelete = async function(entryId) {
+      try { await COL_REF.doc(String(entryId)).delete(); return true; }
+      catch(e) { console.error("Firebase delete error:", e); return false; }
+    };
+
     window._fbLoad = async function() {
       try {
-        const snap = await DOC_REF.get();
-        if(snap.exists) {
-          const d = snap.data();
-          console.log("Firebase loaded, entry count:", (d.data||[]).length);
-          return d.data || [];
+        // Try new per-document collection first
+        const snap = await COL_REF.get();
+        if (!snap.empty) {
+          const docs = snap.docs.map(d => d.data());
+          console.log("Firebase loaded (per-doc), count:", docs.length);
+          return docs;
         }
-        console.log("Firebase doc does not exist");
+        // Fall back to old single-doc format for migration
+        const oldSnap = await META_REF.get();
+        if (oldSnap.exists && oldSnap.data().data) {
+          console.log("Migrating from single-doc format…");
+          const oldData = oldSnap.data().data || [];
+          // Migrate old data to new per-doc format silently
+          if (oldData.length > 0) {
+            window._fbSave(oldData).then(() => {
+              console.log("Migration to per-doc complete.");
+            });
+          }
+          return oldData;
+        }
+        console.log("No Firebase data found");
         return null;
       } catch(e) {
         console.error("Firebase load error:", e);
@@ -63,8 +105,10 @@
     };
 
     window._fbListen = function(callback) {
-      return DOC_REF.onSnapshot((snap) => {
-        if(snap.exists && !window._syncPaused) callback(snap.data().data || []);
+      return COL_REF.onSnapshot(snap => {
+        if (window._syncPaused) return;
+        const docs = snap.docs.map(d => d.data());
+        if (docs.length > 0) callback(docs);
       });
     };
 
@@ -558,6 +602,10 @@
   .thumb-cell { width: 64px; text-align: center; }
   .thumb-img { width:56px; height:44px; object-fit:cover; border-radius:5px; border:1px solid var(--border); display:block; cursor:pointer; }
   .thumb-placeholder { width:56px; height:44px; border:2px dashed var(--border); border-radius:5px; display:flex; align-items:center; justify-content:center; cursor:pointer; color:var(--muted); font-size:18px; transition:border-color 0.15s; }
+  .photo-cloud-badge { display:block; font-size:9px; text-align:center; margin-top:2px; line-height:1; }
+  .cloud-yes { color:#16a34a; }   /* green — on Firebase */
+  .cloud-local { color:#6b7280; } /* grey — local only */
+  .cloud-none { color:#d1d5db; }  /* no photo */
   .thumb-placeholder:hover { border-color:var(--accent2); color:var(--accent2); }
   .serial-input { font-family:'JetBrains Mono',monospace; font-size:12px; filter:blur(5px); transition:filter 0.2s; width:120px; }
   .serial-input:focus, .serial-input:hover { filter:blur(0); }
@@ -1937,6 +1985,70 @@ function triggerPhotoUpload(id) {
   if(input) input.click();
 }
 
+// ─── EXIF orientation reader ─────────────────────────────────
+function getExifOrientation(file) {
+  return new Promise(resolve => {
+    const reader = new FileReader();
+    reader.onload = e => {
+      const view = new DataView(e.target.result);
+      if (view.getUint16(0, false) !== 0xFFD8) return resolve(1);
+      let offset = 2;
+      while (offset < view.byteLength) {
+        if (view.getUint16(offset, false) === 0xFFE1) {
+          const exifLen = view.getUint16(offset + 2, false);
+          const exif = new DataView(e.target.result, offset + 4, exifLen - 2);
+          const little = exif.getUint16(6, false) === 0x4949;
+          const tags = exif.getUint32(10, little);
+          for (let i = 0; i < tags; i++) {
+            if (exif.getUint16(12 + i * 12, little) === 0x0112) {
+              return resolve(exif.getUint16(12 + i * 12 + 8, little));
+            }
+          }
+          return resolve(1);
+        }
+        offset += 2 + view.getUint16(offset + 2, false);
+      }
+      resolve(1);
+    };
+    reader.onerror = () => resolve(1);
+    reader.readAsArrayBuffer(file.slice(0, 64 * 1024));
+  });
+}
+
+// Apply EXIF correction + optional 90° CCW rotation to put barrel left
+function applyExifAndRotation(ctx, orient, needsRotate, srcW, srcH, finalW, finalH) {
+  // EXIF transform matrix
+  const exifXforms = {
+    1: [1,0,0,1,0,0],
+    2: [-1,0,0,1,srcW,0],
+    3: [-1,0,0,-1,srcW,srcH],
+    4: [1,0,0,-1,0,srcH],
+    5: [0,1,1,0,0,0],
+    6: [0,1,-1,0,srcH,0],
+    7: [0,-1,-1,0,srcH,srcW],
+    8: [0,-1,1,0,0,srcW],
+  };
+  const rotated90 = orient >= 5 && orient <= 8;
+  // Scale from source space to canvas space
+  const scaleX = finalW / (rotated90 ? srcH : srcW);
+  const scaleY = finalH / (rotated90 ? srcW : srcH);
+
+  ctx.scale(scaleX, scaleY);
+  const [a,b,c,d,e,f] = exifXforms[orient] || [1,0,0,1,0,0];
+  ctx.transform(a,b,c,d,e,f);
+
+  // Additional 90° CCW rotation to force landscape (barrel left)
+  if (needsRotate) {
+    const corrW = rotated90 ? srcH : srcW;
+    const corrH = rotated90 ? srcW : srcH;
+    // Undo scale, rotate, rescale
+    ctx.scale(1/scaleX, 1/scaleY);
+    ctx.translate(0, finalW); // finalW = original corrH after rotation
+    ctx.rotate(-Math.PI / 2);
+    ctx.scale(finalW / corrH, finalH / corrW);
+  }
+}
+
 async function handlePhotoUpload(id, input) {
   const file = input.files[0];
   if(!file) return;
@@ -1944,18 +2056,41 @@ async function handlePhotoUpload(id, input) {
   setBusy(true);
   showToast('⏳ Sizing down & uploading...');
 
+  // Read EXIF orientation before loading image
+  const exifOrient = await getExifOrientation(file);
+
   const reader = new FileReader();
   reader.onload = function(e) {
     const img = new Image();
     img.onload = function() {
-      const canvas = document.createElement('canvas');
       const MAX = 800;
-      let w = img.width, h = img.height;
-      if(w > h) { if(w > MAX) { h = Math.round(h*MAX/w); w = MAX; } }
-      else       { if(h > MAX) { w = Math.round(w*MAX/h); h = MAX; } }
-      canvas.width = w;
-      canvas.height = h;
-      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+      // Correct for EXIF rotation first
+      const rotated90 = exifOrient >= 5 && exifOrient <= 8;
+      let srcW = img.width, srcH = img.height;
+      // After EXIF correction, swap dims if phone was held portrait
+      let corrW = rotated90 ? srcH : srcW;
+      let corrH = rotated90 ? srcW : srcH;
+
+      // If still portrait after EXIF correction, rotate 90° CCW
+      // so barrel faces left (landscape, wider than tall)
+      const needsRotate = corrH > corrW;
+      const outW = needsRotate ? corrH : corrW;
+      const outH = needsRotate ? corrW : corrH;
+
+      // Scale to MAX on longest side
+      let finalW = outW, finalH = outH;
+      if(finalW > MAX) { finalH = Math.round(finalH * MAX / finalW); finalW = MAX; }
+      if(finalH > MAX) { finalW = Math.round(finalW * MAX / finalH); finalH = MAX; }
+
+      const canvas = document.createElement('canvas');
+      canvas.width = finalW;
+      canvas.height = finalH;
+      const ctx = canvas.getContext('2d');
+
+      ctx.save();
+      applyExifAndRotation(ctx, exifOrient, needsRotate, srcW, srcH, finalW, finalH);
+      ctx.drawImage(img, 0, 0);
+      ctx.restore();
 
       canvas.toBlob(async (blob) => {
         try {
@@ -2082,6 +2217,11 @@ function resolveNameConfirm(accept) {
 
 let _saveTimer = null;
 let _lastSave = 0;
+// ─── Virtual Scroll ───────────────────────────────────────────
+const VS_ROW_H = 58;
+const VS_PAGE  = 40;
+let   _vsStart = 0;
+let   _vsObs   = null;
 function saveAll() {
   // Debounce — don't spam Firebase on rapid edits
   const now = Date.now();
@@ -2259,7 +2399,6 @@ function renderTable() {
   updateStats();
   setTimeout(fixStickyHeader, 50);
   renderMobileCards();
-  // Re-apply privacy blur after render
   setTimeout(() => {
     if(privacyMode) {
       ['stat-total','stat-owned','stat-want','stat-pic','stat-invest'].forEach(id => {
@@ -2271,18 +2410,21 @@ function renderTable() {
       });
     }
   }, 0);
-  const tbody = document.getElementById('tableBody');
-  if(!filtered.length) {
-    tbody.innerHTML = `<tr><td colspan="18" style="text-align:center;padding:40px;color:var(--muted)">No results found.</td></tr>`;
-    return;
-  }
-  tbody.innerHTML = filtered.map((d, i) => `
+  _vsStart = 0;
+  vsRender();
+}
+
+function rowHTML(d, i) { return `
     <tr id="row-${d.id}">
       <td class="td-num">${i+1}</td>
       <td class="thumb-cell">
         ${(d.photo || d.photoUrl)
           ? `<img src="${d.photo || d.photoUrl}" class="thumb-img" onclick="viewPhoto(${d.id})" title="Click to view">`
           : `<div class="thumb-placeholder" onclick="triggerPhotoUpload(${d.id})" title="Upload photo">📷</div>`}
+        <span class="photo-cloud-badge ${d.photoUrl ? 'cloud-yes' : d.photo ? 'cloud-local' : 'cloud-none'}"
+              title="${d.photoUrl ? '☁️ Backed up to cloud' : d.photo ? '💾 Local only — not cloud backed up' : 'No photo'}">
+          ${d.photoUrl ? '☁️' : d.photo ? '💾' : ''}
+        </span>
         <input type="file" accept="image/*" id="photoinput-${d.id}" style="display:none" onchange="handlePhotoUpload(${d.id},this)">
       </td>
       <td>
@@ -2402,8 +2544,9 @@ function renderTable() {
         <div class="serial-wrap">
           <input class="editable serial-input ${privacyMode?'privacy-blur ':''}s-input" type="text" placeholder="Serial #"
             value="${escHtml(d.serial||'')}"
+            oninput="this.value=this.value.toUpperCase().replace(/[^A-Z0-9\-]/g,'')"
             onchange="updateField(${d.id},'serial',this.value)"
-            autocomplete="off" />
+            autocomplete="off" spellcheck="false" />
         </div>
       </td>
 
@@ -2454,7 +2597,49 @@ function renderTable() {
         </div>
       </td>
     </tr>
-  `).join('');
+  `; }
+
+function vsRender() {
+  const tbody = document.getElementById('tableBody');
+  if (!filtered.length) {
+    tbody.innerHTML = `<tr><td colspan="18" style="text-align:center;padding:40px;color:var(--muted)">No results found.</td></tr>`;
+    return;
+  }
+
+  const total   = filtered.length;
+  const start   = Math.max(0, _vsStart);
+  const end     = Math.min(total, start + VS_PAGE);
+  const topPx   = start * VS_ROW_H;
+  const botPx   = Math.max(0, (total - end)) * VS_ROW_H;
+
+  // Spacer rows simulate the full list height without rendering every row
+  const topSpacer = topPx  > 0 ? `<tr id="vs-top"  style="height:${topPx}px;"><td colspan="18"></td></tr>` : '';
+  const botSpacer = botPx  > 0 ? `<tr id="vs-bot"  style="height:${botPx}px;"><td colspan="18"></td></tr>` : '';
+
+  const rows = filtered.slice(start, end).map((d, idx) => rowHTML(d, start + idx)).join('');
+  tbody.innerHTML = topSpacer + rows + botSpacer;
+
+  // Disconnect old observer
+  if (_vsObs) _vsObs.disconnect();
+
+  // Watch sentinels — scroll up/down triggers re-render of next window
+  _vsObs = new IntersectionObserver(entries => {
+    entries.forEach(e => {
+      if (!e.isIntersecting) return;
+      if (e.target.id === 'vs-bot') {
+        _vsStart = Math.min(total - VS_PAGE, _vsStart + Math.floor(VS_PAGE / 2));
+        vsRender();
+      } else if (e.target.id === 'vs-top' && _vsStart > 0) {
+        _vsStart = Math.max(0, _vsStart - Math.floor(VS_PAGE / 2));
+        vsRender();
+      }
+    });
+  }, { rootMargin: '120px' });
+
+  const topEl = document.getElementById('vs-top');
+  const botEl = document.getElementById('vs-bot');
+  if (topEl) _vsObs.observe(topEl);
+  if (botEl) _vsObs.observe(botEl);
 }
 
 // ─── Date Input Builder ───────────────────────────────────────
@@ -3144,6 +3329,8 @@ function resolveDeleteConfirm(confirmed) {
   overlay.classList.remove('open');
   if(confirmed) {
     const id = parseInt(overlay.dataset.pendingId);
+    // Remove from Firestore per-doc collection too
+    if(window._fbDelete) window._fbDelete(id);
     data = data.filter(d=>d.id!==id);
     saveAll();
     filterTable();
@@ -4181,7 +4368,7 @@ if('serviceWorker' in navigator) {
         </div>
         <div class="ri-field">
           <label>Serial Number</label>
-          <input type="text" id="riSerial" placeholder="e.g. BXYZ123">
+          <input type="text" id="riSerial" placeholder="e.g. BXYZ123" oninput="this.value=this.value.toUpperCase().replace(/[^A-Z0-9\-]/g,'')" spellcheck="false">
         </div>
         <div class="ri-field">
           <label>UPC / Barcode</label>
