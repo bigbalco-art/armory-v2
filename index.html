@@ -2141,12 +2141,16 @@ function viewPhoto(id) {
     saveRotBtn.disabled = true;
     saveRotBtn.textContent = 'Saving…';
     try {
-      // Draw directly from the already-loaded img element in the overlay —
-      // avoids CORS issues from re-fetching Firebase Storage URLs
+      // Fetch image as blob to get around CORS canvas taint on Firebase URLs
+      // (img.naturalWidth is 0 for cross-origin images even when displayed fine)
+      const fetchResp = await fetch(photoSrc);
+      const imgBlob = await fetchResp.blob();
+      const objURL = URL.createObjectURL(imgBlob);
+      const cleanImg = await createImageBitmap(new Blob([await imgBlob.arrayBuffer()], {type: imgBlob.type}));
+
       const rad = (currentRotation * Math.PI) / 180;
       const sin = Math.abs(Math.sin(rad)), cos = Math.abs(Math.cos(rad));
-      // naturalWidth/Height are the true pixel dimensions (not CSS display size)
-      const nw = img.naturalWidth, nh = img.naturalHeight;
+      const nw = cleanImg.width, nh = cleanImg.height;
       const cw = Math.round(nw * cos + nh * sin);
       const ch = Math.round(nw * sin + nh * cos);
       const canvas = document.createElement('canvas');
@@ -2156,7 +2160,9 @@ function viewPhoto(id) {
       ctx.fillRect(0, 0, cw, ch);
       ctx.translate(cw / 2, ch / 2);
       ctx.rotate(rad);
-      ctx.drawImage(img, -nw / 2, -nh / 2);
+      ctx.drawImage(cleanImg, -nw / 2, -nh / 2);
+      cleanImg.close();
+      URL.revokeObjectURL(objURL);
       canvas.toBlob(async blob => {
         try {
           const storageRef = firebase.storage().ref(`firearms/${id}.jpg`);
@@ -4563,13 +4569,13 @@ if('serviceWorker' in navigator) {
 
 <script>
 // ─── FFL Receipt Import ────────────────────────────────────────
-let _riImageBase64 = null;
-let _riExtracted = {};
-let _riSelectedMatchId = null; // null = new entry
+// (vars declared below with _riFirearms block)
 
 function openReceiptImport() {
   riGoStep(1);
   _riImageBase64 = null;
+  _riFirearms = [];
+  _riCurrentIndex = 0;
   _riExtracted = {};
   _riSelectedMatchId = undefined;
   document.getElementById('receiptImportOverlay').classList.add('open');
