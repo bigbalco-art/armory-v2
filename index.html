@@ -2565,7 +2565,7 @@ function renderMobileCards() {
     <div class="fire-card" id="mcard-${d.id}">
       <div class="fire-card-header">
         ${(d.photo || d.photoUrl)
-          ? `<img src="${d.photo || d.photoUrl}" class="fire-card-thumb" onclick="viewPhoto(${d.id})">`
+          ? `<img src="${d.photo || d.photoUrl}" class="fire-card-thumb" onclick="viewPhoto(${d.id})" loading="lazy" decoding="async">`
           : `<div class="fire-card-thumb-ph" onclick="triggerPhotoUpload(${d.id})">📷</div>`}
         <input type="file" accept="image/*" id="photoinput-${d.id}" style="display:none" onchange="handlePhotoUpload(${d.id},this)">
         <div style="flex:1;min-width:0;">
@@ -2668,7 +2668,7 @@ function rowHTML(d, i) { return `
       <td class="td-num">${i+1}</td>
       <td class="thumb-cell">
         ${(d.photo || d.photoUrl)
-          ? `<img src="${d.photo || d.photoUrl}" class="thumb-img" onclick="viewPhoto(${d.id})" title="Click to view">`
+          ? `<img src="${d.photo || d.photoUrl}" class="thumb-img" onclick="viewPhoto(${d.id})" title="Click to view" loading="lazy" decoding="async">`
           : `<div class="thumb-placeholder" onclick="triggerPhotoUpload(${d.id})" title="Upload photo">📷</div>`}
         <span class="photo-cloud-badge ${d.photoUrl ? 'cloud-yes' : d.photo ? 'cloud-local' : 'cloud-none'}"
               title="${d.photoUrl ? '☁️ Backed up to cloud' : d.photo ? '💾 Local only — not cloud backed up' : 'No photo'}">
