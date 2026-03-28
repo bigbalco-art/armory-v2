@@ -5159,18 +5159,22 @@ function riLoadCurrentFirearm() {
   const counterEl = document.getElementById('riFirearmCounter');
   if (counterEl) counterEl.textContent = total > 1 ? `Firearm ${_riCurrentIndex + 1} of ${total}` : '';
 
-  // Only fill fields that are empty — don't overwrite data user already entered
-  const _setIfEmpty = (id, val) => {
+  // Always clear all fields before loading next firearm
+  // (setIfEmpty caused items 2-4 to show item 1's data since fields weren't empty)
+  ['riName','riManufacturer','riSerial','riUPC','riMPN','riCaliber',
+   'riPrice','riDate','riFflFee','riPickupDate','riActualPrice','riActualDate'].forEach(id => {
     const el = document.getElementById(id);
-    if (!el) return;
-    if (!el.value && val) { el.value = val; }
-  };
-  _setIfEmpty('riName', f.name);
-  _setIfEmpty('riManufacturer', f.manufacturer);
-  _setIfEmpty('riSerial', f.serial);
-  _setIfEmpty('riUPC', f.upc);
-  _setIfEmpty('riMPN', f.mpn);
-  _setIfEmpty('riCaliber', f.caliber);
+    if (el) el.value = '';
+  });
+
+  // Now populate from this firearm's data
+  const _set = (id, val) => { const el = document.getElementById(id); if (el && val) el.value = val; };
+  _set('riName', f.name);
+  _set('riManufacturer', f.manufacturer);
+  _set('riSerial', f.serial);
+  _set('riUPC', f.upc);
+  _set('riMPN', f.mpn);
+  _set('riCaliber', f.caliber);
   riApplyReceiptType(f.receiptType || 'purchase', f);
 
   const confMap = { riName:'name', riManufacturer:'manufacturer', riSerial:'serial', riUPC:'upc', riMPN:'mpn', riCaliber:'caliber', riPrice:'price', riFflFee:'price' };
