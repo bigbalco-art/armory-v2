@@ -1091,9 +1091,20 @@
       <option value="missing_mpn">Missing MPN</option>
       <option value="missing_both">Missing Both</option>
     </select>
+    <select id="filterSerial" onchange="filterTable()">
+      <option value="">All Serials</option>
+      <option value="has_serial">Has Serial #</option>
+      <option value="no_serial">No Serial #</option>
+    </select>
+    <select id="filterPrice" onchange="filterTable()">
+      <option value="">All Prices</option>
+      <option value="has_price">Has Purchase Price</option>
+      <option value="no_price">No Purchase Price</option>
+    </select>
   </div>
   <div class="toolbar-row">
     <button class="btn btn-accent" onclick="openAddModal()">+ Add Firearm</button>
+    <button class="btn btn-ghost btn-sm" onclick="openMultiUPCScan()" title="Scan multiple UPCs/labels from one photo and match to inventory">📷 Scan UPCs</button>
     <button class="btn btn-ghost btn-sm" onclick="saveAll()">💾 Save</button>
     <button class="btn btn-ghost btn-sm" onclick="exportCSV()">⬇ CSV</button>
     <button class="btn btn-ghost btn-sm" onclick="exportJSON()">⬇ Backup</button>
@@ -1222,10 +1233,11 @@
         </div>
         <!-- Photo upload -->
         <div style="display:flex;align-items:center;gap:12px;">
-          <div id="fPhotoPreview" style="width:80px;height:64px;border:2px dashed var(--border);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:28px;cursor:pointer;flex-shrink:0;overflow:hidden;" onclick="document.getElementById('fPhotoFile').click()">📷</div>
+          <div id="fPhotoPreview" style="width:80px;height:64px;border:2px dashed var(--border);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:28px;cursor:pointer;flex-shrink:0;overflow:hidden;" onclick="document.getElementById('fPhotoFile').click()" title="Click to upload from gallery">📷</div>
           <div>
             <div style="font-family:'JetBrains Mono',monospace;font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);margin-bottom:4px;">Firearm Photo</div>
-            <button type="button" class="btn btn-ghost btn-sm" onclick="document.getElementById('fPhotoFile').click()">Upload</button>
+            <button type="button" class="btn btn-ghost btn-sm" onclick="document.getElementById('fPhotoFile').click()">🖼 Gallery</button>
+            <label class="btn btn-ghost btn-sm" style="cursor:pointer;margin:0;">📷 Camera<input type="file" id="fPhotoCamera" accept="image/*" capture="environment" style="display:none" onchange="previewModalPhoto(this)"></label>
             <button type="button" class="btn btn-ghost btn-sm" id="fPhotoRemoveBtn" style="display:none;color:var(--red);" onclick="clearModalPhoto()">Remove</button>
             <input type="file" id="fPhotoFile" accept="image/*" style="display:none" onchange="previewModalPhoto(this)">
             <input type="hidden" id="fPhotoData">
@@ -2294,8 +2306,15 @@ function viewPhoto(id) {
   ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.88);z-index:9999;display:flex;align-items:center;justify-content:center;';
 
   const inner = document.createElement('div');
-  inner.style.cssText = 'display:flex;flex-direction:column;align-items:center;max-width:94vw;max-height:94vh;';
+  inner.style.cssText = 'position:relative;display:flex;flex-direction:column;align-items:center;max-width:94vw;max-height:94vh;';
   inner.onclick = e => e.stopPropagation();
+
+  // X close button top right
+  const xBtn = document.createElement('button');
+  xBtn.innerHTML = '✕';
+  xBtn.style.cssText = 'position:absolute;top:-12px;right:-12px;width:32px;height:32px;border-radius:50%;border:none;background:rgba(255,255,255,0.2);color:#fff;font-size:16px;cursor:pointer;z-index:10;display:flex;align-items:center;justify-content:center;';
+  xBtn.onclick = () => ov.remove();
+  inner.appendChild(xBtn);
 
   // Photo — rotation applied via CSS transform
   const img = document.createElement('img');
@@ -2334,17 +2353,24 @@ function viewPhoto(id) {
 
   // Button bar
   const bar = document.createElement('div');
-  bar.style.cssText = 'display:flex;align-items:center;justify-content:space-between;width:100%;margin-top:14px;gap:10px;flex-wrap:wrap;';
+  bar.style.cssText = 'display:flex;align-items:center;justify-content:space-between;width:100%;margin-top:10px;gap:8px;flex-wrap:wrap;padding:0 2px;';
 
   const nameEl = document.createElement('div');
   nameEl.style.cssText = 'color:rgba(255,255,255,0.75);font-size:13px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
   nameEl.textContent = entry.name;
   bar.appendChild(nameEl);
 
-  const btnWrap = document.createElement('div');
-  btnWrap.style.cssText = 'display:flex;gap:8px;flex-shrink:0;flex-wrap:wrap;';
+  // Close button in bar (easier to tap on mobile than the corner X)
+  const closeBarBtn = document.createElement('button');
+  closeBarBtn.innerHTML = '✕ Close';
+  closeBarBtn.style.cssText = 'padding:8px 14px;border-radius:7px;cursor:pointer;font-size:13px;font-weight:500;background:rgba(255,255,255,0.1);color:#fff;border:1px solid rgba(255,255,255,0.2);flex-shrink:0;';
+  closeBarBtn.onclick = () => ov.remove();
+  bar.appendChild(closeBarBtn);
 
-  const btnStyle = 'padding:8px 16px;border-radius:7px;cursor:pointer;font-size:13px;font-weight:500;border:none;';
+  const btnWrap = document.createElement('div');
+  btnWrap.style.cssText = 'display:flex;gap:6px;flex-shrink:0;flex-wrap:wrap;justify-content:center;max-width:100%;';
+
+  const btnStyle = 'padding:8px 12px;border-radius:7px;cursor:pointer;font-size:12px;font-weight:500;border:none;white-space:nowrap;';
   const ghostStyle = btnStyle + 'background:rgba(255,255,255,0.15);color:#fff;border:1px solid rgba(255,255,255,0.3);';
 
   // Rotate CW button
@@ -2427,7 +2453,14 @@ function viewPhoto(id) {
   replaceInput.type = 'file';
   replaceInput.accept = 'image/*';
   replaceInput.style.display = 'none';
-  replaceInput.onchange = () => { ov.remove(); handlePhotoUpload(id, replaceInput); };
+  replaceInput.onchange = async () => {
+    await handlePhotoUpload(id, replaceInput);
+    // Refresh the image in the viewer without closing
+    const entry2 = data.find(d => d.id === id);
+    if (entry2 && (entry2.photoUrl || entry2.photo)) {
+      img.src = entry2.photoUrl || entry2.photo;
+    }
+  };
   replaceLabel.appendChild(replaceInput);
   btnWrap.appendChild(replaceLabel);
 
@@ -2554,9 +2587,13 @@ function showLookupReview(idx, p) {
     <div style="font-size:12px;color:var(--muted);margin-bottom:6px;">${escHtml(entry.name)} — check each field and choose what to keep</div>
     ${serialNote ? `<div style="font-size:11px;background:rgba(37,99,168,0.07);border:1px solid rgba(37,99,168,0.2);border-radius:6px;padding:6px 10px;color:var(--accent2);margin-bottom:8px;">🔍 Serial ID: ${escHtml(serialNote)}</div>` : ''}
     ${(p._sources && p._sources.length) ? `<div style="font-size:10px;color:var(--muted);margin-bottom:10px;padding:5px 8px;background:rgba(22,163,74,0.05);border:1px solid rgba(22,163,74,0.2);border-radius:6px;">🌐 Sources: ${p._sources.map(s=>`<a href="${s}" target="_blank" style="color:var(--accent2);text-decoration:none;">${new URL(s).hostname}</a>`).join(' · ')}</div>` : ''}
-    <div style="display:flex;gap:10px;margin-bottom:10px;flex-wrap:wrap;">
+    <div style="display:flex;gap:10px;margin-bottom:8px;flex-wrap:wrap;align-items:center;">
       <span style="font-size:11px;padding:2px 8px;border-radius:4px;background:rgba(22,163,74,0.1);color:#16a34a;">🟢 Empty — safe to fill</span>
-      <span style="font-size:11px;padding:2px 8px;border-radius:4px;background:rgba(245,158,11,0.1);color:#d97706;">🟡 Has data — review carefully</span>
+      <span style="font-size:11px;padding:2px 8px;border-radius:4px;background:rgba(245,158,11,0.1);color:#d97706;">🟡 Has data</span>
+      <div style="margin-left:auto;display:flex;gap:6px;">
+        <button onclick="document.querySelectorAll('#lookupReviewDlg input[type=checkbox]').forEach(c=>c.checked=true)" style="font-size:11px;padding:3px 8px;border-radius:4px;border:1px solid var(--border);background:none;color:var(--text);cursor:pointer;">All Scanned</button>
+        <button onclick="document.querySelectorAll('#lookupReviewDlg input[type=checkbox]').forEach(c=>c.checked=false)" style="font-size:11px;padding:3px 8px;border-radius:4px;border:1px solid var(--border);background:none;color:var(--text);cursor:pointer;">All Current</button>
+      </div>
     </div>
     <div style="display:grid;grid-template-columns:80px 1fr 1fr;gap:6px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:var(--muted);margin-bottom:8px;padding:0 4px;">
       <div>Field</div><div>Your Value</div><div>AI Found</div>
@@ -2758,7 +2795,7 @@ function showUsageDashboard() {
         <div style="font-size:13px;font-weight:600;">📷 Photo Uploads</div>
         <div style="font-size:12px;color:var(--green);font-weight:700;">${u.photos} today</div>
       </div>
-      <div style="font-size:10px;color:var(--muted);">Firebase Storage free tier: 5GB total</div>
+      <div style="font-size:10px;color:var(--muted);">Firebase Storage free tier: 5GB total — <a href="https://console.firebase.google.com/project/firearm-inventory-5d0be/storage" target="_blank" style="color:var(--accent2);">check usage</a></div>
     </div>
 
     <div style="background:rgba(37,99,168,0.06);border:1px solid rgba(37,99,168,0.2);border-radius:8px;padding:10px 12px;margin-bottom:16px;font-size:11px;color:var(--muted);line-height:1.7;">
@@ -2770,6 +2807,18 @@ function showUsageDashboard() {
     <div style="display:flex;justify-content:flex-end;">
       <button onclick="document.getElementById('usageDlg').remove();" style="padding:7px 16px;border-radius:6px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:13px;font-weight:600;">Close</button>
     </div>`;
+
+  // Estimate storage from photo count in data
+  setTimeout(() => {
+    const photoCount = (typeof data !== 'undefined') ? data.filter(d => d.photoUrl).length : 0;
+    const estMB = (photoCount * 0.25).toFixed(1); // ~250KB avg per photo
+    const estPct = Math.min(100, Math.round((estMB / 5120) * 100));
+    const dispEl = document.getElementById('storageUsageDisplay');
+    const barEl = document.getElementById('storageBar');
+    if (dispEl) dispEl.textContent = `~${estMB} MB / 5,120 MB`;
+    if (barEl) { barEl.style.width = Math.max(estPct, 0.5) + '%'; barEl.style.background = estPct > 80 ? 'var(--red)' : estPct > 50 ? '#f59e0b' : 'var(--green)'; }
+  }, 100);
+  const _unusedEnd = ``;
 
   dlg.appendChild(box);
   dlg.onclick = e => { if (e.target === dlg) dlg.remove(); };
@@ -2859,6 +2908,14 @@ function filterTable() {
     if(upcMpnFilter==='missing_upc' && hasUpc) return false;
     if(upcMpnFilter==='missing_mpn' && hasMpn) return false;
     if(upcMpnFilter==='missing_both' && (hasUpc || hasMpn)) return false;
+    const serialFilter = (document.getElementById('filterSerial')||{}).value||'';
+    const hasSerial = !!(d.serial && d.serial.trim());
+    if(serialFilter==='has_serial' && !hasSerial) return false;
+    if(serialFilter==='no_serial' && hasSerial) return false;
+    const priceFilter = (document.getElementById('filterPrice')||{}).value||'';
+    const hasPrice = !!(d.purchasePrice && String(d.purchasePrice).trim());
+    if(priceFilter==='has_price' && !hasPrice) return false;
+    if(priceFilter==='no_price' && hasPrice) return false;
     return true;
   });
   renderTable();
@@ -3771,12 +3828,16 @@ function openAddModal() {
   // Remove any old name suggestion
   const sug = document.getElementById('fNameSuggest');
   if(sug) sug.remove();
-  document.getElementById('fStatus').value='want';
+  document.getElementById('fStatus').value='owned';
   document.getElementById('fLocation').value='';
   document.getElementById('fNeedPic').value='yes';
   clearModalPhoto();
   updateModalCaliberList();
   document.getElementById('modalOverlay').classList.add('open');
+  setTimeout(() => {
+    const m = document.querySelector('#modalOverlay .modal');
+    if (m) m.scrollTop = 0;
+  }, 30);
 }
 
 function openEditModal(id) {
@@ -3834,7 +3895,14 @@ function openEditModal(id) {
     auditGroup.style.display = 'none';
   }
   updateModalCaliberList();
+  // Clear lingering name suggestion from previous edit
+  const _sug = document.getElementById('fNameSuggest');
+  if (_sug) _sug.remove();
   document.getElementById('modalOverlay').classList.add('open');
+  setTimeout(() => {
+    const m = document.querySelector('#modalOverlay .modal');
+    if (m) m.scrollTop = 0;
+  }, 30);
 }
 
 function closeModal() {
@@ -4338,9 +4406,13 @@ function showLabelReview(p) {
   header.innerHTML = `
     <div style="font-size:16px;font-weight:700;color:var(--accent);margin-bottom:3px;">📋 Label Scan Results</div>
     <div style="font-size:12px;color:var(--muted);margin-bottom:14px;">Confidence: <strong style="color:${p.confidence==='high'?'var(--green)':p.confidence==='medium'?'#f59e0b':'var(--red)'}">${p.confidence||'unknown'}</strong>${p.notes ? ' — ' + escHtml(p.notes) : ''}</div>
-    <div style="display:flex;gap:10px;margin-bottom:8px;flex-wrap:wrap;">
-      <span style="font-size:11px;padding:2px 8px;border-radius:4px;background:rgba(22,163,74,0.1);color:#16a34a;">🟢 Empty — safe to fill</span>
-      <span style="font-size:11px;padding:2px 8px;border-radius:4px;background:rgba(245,158,11,0.1);color:#d97706;">🟡 Has data — review carefully</span>
+    <div style="display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap;align-items:center;">
+      <span style="font-size:11px;padding:2px 8px;border-radius:4px;background:rgba(22,163,74,0.1);color:#16a34a;">🟢 Empty</span>
+      <span style="font-size:11px;padding:2px 8px;border-radius:4px;background:rgba(245,158,11,0.1);color:#d97706;">🟡 Has data</span>
+      <div style="margin-left:auto;display:flex;gap:6px;">
+        <button onclick="document.querySelectorAll('#labelReviewDlg input[type=checkbox]').forEach(c=>c.checked=true)" style="font-size:11px;padding:3px 8px;border-radius:4px;border:1px solid var(--border);background:none;color:var(--text);cursor:pointer;">All Scanned</button>
+        <button onclick="document.querySelectorAll('#labelReviewDlg input[type=checkbox]').forEach(c=>c.checked=false)" style="font-size:11px;padding:3px 8px;border-radius:4px;border:1px solid var(--border);background:none;color:var(--text);cursor:pointer;">All Current</button>
+      </div>
     </div>
     <div style="display:grid;grid-template-columns:90px 1fr 1fr;gap:5px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:var(--muted);padding:0 4px;margin-bottom:6px;">
       <div>Field</div><div>Current</div><div>Scanned</div>
@@ -4680,8 +4752,10 @@ async function startBulkLookup() {
                 </div>
               </div>`;
             document.body.appendChild(dlg);
-            dlg.querySelector('#dlgAccept').onclick = () => { document.body.removeChild(dlg); resolve(true); };
-            dlg.querySelector('#dlgSkip').onclick = () => { document.body.removeChild(dlg); resolve(false); };
+            const _removeDlg = () => { if(document.body.contains(dlg)) document.body.removeChild(dlg); };
+            dlg.querySelector('#dlgAccept').onclick = () => { _removeDlg(); resolve(true); };
+            dlg.querySelector('#dlgSkip').onclick  = () => { _removeDlg(); resolve(false); };
+            dlg.onclick = e => { if(e.target === dlg) { _removeDlg(); resolve(false); } };
           });
 
           if(accepted) {
@@ -5249,6 +5323,7 @@ if('serviceWorker' in navigator) {
       <div class="ri-actions" style="margin-top:16px;">
         <button class="btn btn-ghost" onclick="closeReceiptImport()">Cancel</button>
         <button class="btn btn-ghost" onclick="riGoStep(3)">← Back</button>
+        <button class="btn btn-ghost" id="riSkipBtn" onclick="riSkipFirearm()" style="font-size:13px;">Skip This One</button>
         <button class="btn-purple" id="riConfirmMatchBtn" onclick="riConfirmMatch()" disabled>Confirm &amp; Import →</button>
       </div>
     </div>
@@ -5793,6 +5868,19 @@ function riFilterMatchList(query) {
   });
 }
 
+function riSkipFirearm() {
+  // Skip current firearm without importing, move to next
+  _riCurrentIndex++;
+  if (_riCurrentIndex < _riFirearms.length) {
+    showToast('Skipped — moving to next firearm');
+    setTimeout(() => riLoadCurrentFirearmAndMatch(), 600);
+  } else {
+    riGoStep(5);
+    document.getElementById('riDoneMsg').textContent = '✅ Done!';
+    document.getElementById('riDoneSub').textContent = 'All firearms processed.';
+  }
+}
+
 function riConfirmMatch() {
   const btn = document.getElementById('riConfirmMatchBtn');
   if (btn) btn.disabled = true;
@@ -5854,5 +5942,275 @@ function riConfirmMatch() {
   }
 }
 </script>
+<!-- MULTI-UPC SCAN MODAL -->
+<div class="modal-overlay" id="multiUPCOverlay" style="z-index:9998;">
+  <div class="modal" style="max-width:600px;max-height:90vh;overflow-y:auto;">
+    <button onclick="document.getElementById('multiUPCOverlay').classList.remove('open')" style="position:absolute;top:12px;right:14px;background:none;border:none;font-size:20px;cursor:pointer;color:var(--muted);">✕</button>
+    <h2 style="font-size:17px;margin-bottom:4px;">📷 Scan UPCs / Labels</h2>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:16px;">Take one photo of multiple boxes or labels — AI will find all UPCs/serials and match each to your inventory.</div>
+
+    <!-- Step 1: Upload -->
+    <div id="muStep1">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;">
+        <label style="display:inline-flex;align-items:center;gap:6px;padding:10px 16px;background:var(--accent);color:#fff;border-radius:8px;cursor:pointer;font-size:13px;font-weight:600;">
+          📷 Take Photo
+          <input type="file" id="muFileCamera" accept="image/*" capture="environment" style="display:none" onchange="muHandleFile(this)">
+        </label>
+        <label style="display:inline-flex;align-items:center;gap:6px;padding:10px 16px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:8px;cursor:pointer;font-size:13px;">
+          🖼 Gallery
+          <input type="file" id="muFileGallery" accept="image/*" style="display:none" onchange="muHandleFile(this)">
+        </label>
+      </div>
+      <div id="muStatus" style="font-size:12px;color:var(--muted);min-height:20px;"></div>
+    </div>
+
+    <!-- Step 2: Results -->
+    <div id="muStep2" style="display:none;">
+      <div id="muPreviewImg" style="margin-bottom:12px;"></div>
+      <div id="muResultsList"></div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px;">
+        <button class="btn btn-ghost" onclick="muReset()">← Scan Another</button>
+        <button class="btn btn-accent" id="muApplyBtn" onclick="muApplyAll()">Apply Selected →</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ─── Multi-UPC Scan ───────────────────────────────────────────
+function openMultiUPCScan() {
+  muReset();
+  document.getElementById('multiUPCOverlay').classList.add('open');
+}
+
+function muReset() {
+  document.getElementById('muStep1').style.display = '';
+  document.getElementById('muStep2').style.display = 'none';
+  document.getElementById('muStatus').textContent = '';
+  document.getElementById('muResultsList').innerHTML = '';
+  document.getElementById('muPreviewImg').innerHTML = '';
+  document.getElementById('muFileCamera').value = '';
+  document.getElementById('muFileGallery').value = '';
+}
+
+async function muHandleFile(input) {
+  const file = input.files[0];
+  if (!file) return;
+  input.value = '';
+
+  const geminiKey = localStorage.getItem('armory_gemini_key') || '';
+  if (!geminiKey) { showToast('⚠ Set your Gemini API key first'); return; }
+
+  const statusEl = document.getElementById('muStatus');
+  statusEl.innerHTML = '<span class="loading-spin"></span> Scanning image for UPCs and serials…';
+
+  try {
+    // Show preview
+    const previewReader = new FileReader();
+    previewReader.onload = e => {
+      document.getElementById('muPreviewImg').innerHTML =
+        `<img src="${e.target.result}" style="width:100%;max-height:200px;object-fit:contain;border-radius:8px;margin-bottom:8px;">`;
+    };
+    previewReader.readAsDataURL(file);
+
+    // Compress
+    const compressed = await riCompressImage(file, 1600, 0.88);
+    const b64 = compressed.split(',')[1];
+    const mediaType = detectMediaType(b64);
+
+    const prompt = `You are a firearms product expert. Carefully examine this photo which may show one or more firearm boxes, labels, or barcodes.
+
+Extract EVERY UPC barcode, serial number, model name, manufacturer, and MPN/SKU you can find.
+There may be multiple firearms in this image — extract each one separately.
+
+Return ONLY raw JSON array, no markdown:
+[
+  {
+    "name": "model name as printed",
+    "manufacturer": "brand name",
+    "serial": "serial number if visible — exact characters",
+    "upc": "12-13 digit UPC barcode number",
+    "mpn": "manufacturer part number / SKU",
+    "caliber": "caliber if shown",
+    "confidence": "high/medium/low"
+  }
+]
+
+Return an empty array [] if nothing can be identified. Never guess serial numbers.`;
+
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`;
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [
+          { inline_data: { mime_type: mediaType, data: b64 } },
+          { text: prompt }
+        ]}],
+        generationConfig: { responseMimeType: 'application/json', temperature: 0.1 }
+      })
+    });
+    trackUsage('scan');
+
+    const respData = await resp.json();
+    if (respData.error) throw new Error(respData.error.message || 'Gemini error');
+    const raw = respData.candidates?.[0]?.content?.parts?.[0]?.text || '[]';
+    let items = [];
+    try {
+      const clean = raw.replace(/```json|```/g, '').trim();
+      const parsed = JSON.parse(clean);
+      items = Array.isArray(parsed) ? parsed : [parsed];
+    } catch(e) { throw new Error('Could not read scan results'); }
+
+    if (!items.length) {
+      statusEl.textContent = '⚠ No UPCs or serials found — try better lighting or a closer shot';
+      return;
+    }
+
+    // Apply verified database to each item
+    items = items.map(item => {
+      const v = verifiedLookup({ upc: item.upc, mpn: item.mpn, name: item.name, manufacturer: item.manufacturer });
+      if (v) {
+        if (v.upc) item.upc = v.upc;
+        if (v.mpn) item.mpn = v.mpn;
+        if (v.name) item.name = v.name;
+        if (v.manufacturer) item.manufacturer = v.manufacturer;
+        item._verified = true;
+      }
+      return item;
+    });
+
+    // Match each scanned item to best inventory entry
+    const matched = items.map(item => {
+      // Try serial exact match first
+      if (item.serial) {
+        const serialMatch = data.find(d => d.serial && d.serial.trim().toLowerCase() === item.serial.trim().toLowerCase());
+        if (serialMatch) return { scanned: item, match: serialMatch, matchType: 'serial' };
+      }
+      // Try UPC match
+      if (item.upc) {
+        const upcMatch = data.find(d => d.upc && d.upc.replace(/[^0-9]/g,'') === item.upc.replace(/[^0-9]/g,''));
+        if (upcMatch) return { scanned: item, match: upcMatch, matchType: 'upc' };
+      }
+      // Score by name/manufacturer
+      const query = ((item.name||'') + ' ' + (item.manufacturer||'')).toLowerCase();
+      const queryWords = query.split(/\s+/).filter(w => w.length > 2);
+      const scored = data.map(entry => {
+        const hay = ((entry.name||'') + ' ' + (entry.manufacturer||'')).toLowerCase();
+        let hits = 0;
+        queryWords.forEach(w => { if (hay.includes(w)) hits++; });
+        return { entry, score: queryWords.length ? Math.round(hits/queryWords.length*100) : 0 };
+      }).filter(x => x.score > 40).sort((a,b) => b.score - a.score);
+      return { scanned: item, match: scored[0]?.entry || null, matchType: scored[0] ? 'name' : 'none', score: scored[0]?.score };
+    });
+
+    statusEl.textContent = `Found ${items.length} item${items.length>1?'s':''} — review matches below`;
+    muShowResults(matched);
+    document.getElementById('muStep1').style.display = 'none';
+    document.getElementById('muStep2').style.display = '';
+
+  } catch(err) {
+    statusEl.textContent = '❌ ' + (err.message || 'Scan failed');
+    console.error('Multi-UPC scan error:', err);
+  }
+}
+
+function muShowResults(matched) {
+  const list = document.getElementById('muResultsList');
+  list.innerHTML = '';
+  list._matched = matched;
+
+  matched.forEach((m, idx) => {
+    const s = m.scanned;
+    const matchBadge = m.matchType === 'serial'
+      ? '<span style="color:#16a34a;font-size:10px;font-weight:700;">✓ Serial Match</span>'
+      : m.matchType === 'upc'
+      ? '<span style="color:#16a34a;font-size:10px;font-weight:700;">✓ UPC Match</span>'
+      : m.matchType === 'name' && m.match
+      ? `<span style="color:#f59e0b;font-size:10px;font-weight:700;">${m.score}% Name Match</span>`
+      : '<span style="color:var(--muted);font-size:10px;">No match found</span>';
+
+    const card = document.createElement('div');
+    card.style.cssText = 'background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:10px;';
+    card.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px;gap:8px;">
+        <div>
+          <div style="font-size:13px;font-weight:600;">${escHtml(s.name || 'Unknown')}</div>
+          <div style="font-size:11px;color:var(--muted);">${[s.manufacturer, s.caliber].filter(Boolean).join(' · ')}</div>
+          ${s._verified ? '<div style="font-size:10px;color:#16a34a;">✓ Verified database</div>' : ''}
+        </div>
+        ${matchBadge}
+      </div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:10px;font-family:monospace;">
+        ${s.upc ? `UPC: ${s.upc}` : ''}${s.upc && s.serial ? ' · ' : ''}${s.serial ? `S/N: ${s.serial}` : ''}${s.mpn ? ` · MPN: ${s.mpn}` : ''}
+      </div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:8px;">
+        ${m.match ? `Matched to: <strong style="color:var(--text);">${escHtml(m.match.name)}</strong>` : 'No inventory match — will be skipped'}
+      </div>
+      ${m.match ? muFieldCheckboxes(s, m.match, idx) : ''}
+      ${m.match ? '' : `<div style="font-size:11px;color:var(--muted);font-style:italic;">Tip: add this firearm first, then scan again to update it.</div>`}
+    `;
+    list.appendChild(card);
+  });
+}
+
+function muFieldCheckboxes(scanned, match, idx) {
+  const fields = [
+    { key: 'upc',   label: 'UPC',    cur: match.upc,   val: scanned.upc   },
+    { key: 'serial',label: 'Serial', cur: match.serial, val: scanned.serial },
+    { key: 'mpn',   label: 'MPN',    cur: match.mpn,   val: scanned.mpn   },
+    { key: 'caliber',label:'Caliber',cur: match.caliber,val: scanned.caliber},
+  ].filter(f => f.val && f.val.toString().trim());
+
+  if (!fields.length) return '<div style="font-size:11px;color:var(--muted);">No new data to apply</div>';
+
+  return fields.map(f => {
+    const same = f.cur && f.cur.toString().toLowerCase() === f.val.toString().toLowerCase();
+    const empty = !f.cur;
+    const checked = !same && !!f.val;
+    const color = same ? 'var(--muted)' : empty ? 'rgba(22,163,74,0.8)' : '#f59e0b';
+    return `<label style="display:flex;align-items:center;gap:8px;font-size:12px;margin-bottom:4px;cursor:pointer;">
+      <input type="checkbox" data-mu-idx="${idx}" data-mu-field="${f.key}" data-mu-val="${escHtml(f.val.toString())}" ${checked ? 'checked' : ''} style="accent-color:var(--accent);">
+      <span style="color:var(--muted);min-width:50px;">${f.label}</span>
+      <span style="color:var(--muted);text-decoration:line-through;font-size:10px;">${f.cur || '—'}</span>
+      <span>→</span>
+      <span style="color:${color};font-weight:600;">${escHtml(f.val.toString())}</span>
+    </label>`;
+  }).join('');
+}
+
+function muApplyAll() {
+  const list = document.getElementById('muResultsList');
+  const matched = list._matched;
+  const checkboxes = list.querySelectorAll('input[type=checkbox][data-mu-idx]');
+  let updated = 0;
+
+  checkboxes.forEach(cb => {
+    if (!cb.checked) return;
+    const idx = parseInt(cb.dataset.muIdx);
+    const field = cb.dataset.muField;
+    const val = cb.dataset.muVal;
+    const match = matched[idx]?.match;
+    if (!match) return;
+    const entry = data.find(d => d.id === match.id);
+    if (!entry) return;
+    entry[field] = val;
+    if (!entry.auditLog) entry.auditLog = [];
+    entry.auditLog.push({ ts: new Date().toISOString(), note: `${field} updated via multi-UPC scan` });
+    updated++;
+  });
+
+  if (updated) {
+    saveAll();
+    filtered = [...data];
+    renderTable();
+    showToast(`✅ Updated ${updated} field${updated>1?'s':''} across inventory`);
+    document.getElementById('multiUPCOverlay').classList.remove('open');
+  } else {
+    showToast('Nothing selected to apply');
+  }
+}
+</script>
+
 </body>
 </html>
