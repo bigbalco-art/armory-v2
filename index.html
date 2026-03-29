@@ -1317,6 +1317,7 @@
         <div style="display:flex;align-items:center;background:var(--bg);border:1px solid var(--border);border-radius:6px;overflow:hidden;">
           <span style="padding:9px 8px;color:var(--muted);font-size:14px;font-weight:600;background:var(--surface2);border-right:1px solid var(--border);user-select:none;">$</span>
           <input type="number" id="fPurchasePrice" placeholder="0.00" step="0.01"
+            oninput="autoSetOwned(this)"
             style="flex:1;border:none;border-radius:0;padding:9px 10px;background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-size:13px;outline:none;">
         </div>
       </div>
@@ -1324,13 +1325,14 @@
         <label>Purchase Date</label>
         <div style="display:flex;gap:6px;align-items:center;">
           <input type="text" id="fPurchaseDateText" placeholder="MM/DD/YYYY or M/D/YY"
+            oninput="autoSetOwned(this)"
             style="flex:1;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:9px 10px;border-radius:6px;font-family:'JetBrains Mono',sans-serif;font-size:13px;outline:none;" />
           <div style="position:relative;display:inline-block;">
             <button type="button" title="Pick from calendar"
               style="background:var(--accent);color:#fff;border:none;border-radius:6px;padding:9px 10px;cursor:pointer;font-size:16px;line-height:1;position:relative;z-index:1;">📅</button>
             <input type="date" id="fPurchaseDateCalHid"
               style="position:absolute;left:0;top:0;width:100%;height:100%;opacity:0;cursor:pointer;z-index:2;"
-              onchange="document.getElementById('fPurchaseDateText').value=toDisplayDate(this.value);" />
+              onchange="document.getElementById('fPurchaseDateText').value=toDisplayDate(this.value); autoSetOwned(this);" />
           </div>
         </div>
       </div>
@@ -1339,6 +1341,7 @@
       <div class="form-group">
         <label>Serial #</label>
         <input type="text" id="fSerial" placeholder="Serial number" autocomplete="off"
+          oninput="autoSetOwned(this)"
           style="font-family:'JetBrains Mono',monospace;">
       </div>
       <div class="form-group">
@@ -2859,6 +2862,18 @@ function saveAll() {
 }
 
 // ─── Render ────────────────────────────────────────────────────
+// Auto-set status to "owned" when serial, price, or date is filled
+function autoSetOwned(el) {
+  if (!el.value || !el.value.trim()) return;
+  const statusEl = document.getElementById('fStatus');
+  if (!statusEl) return;
+  // Only upgrade to owned — never downgrade (don't change sold, etc.)
+  const cur = statusEl.value;
+  if (cur === 'want' || cur === 'priority') {
+    statusEl.value = 'owned';
+  }
+}
+
 function updateStats() {
   updateUsageStat();
   document.getElementById('stat-total').textContent = data.length;
@@ -3108,7 +3123,7 @@ function rowHTML(d, i) { return `
           data-original-upc="${escHtml(d.upc||'')}"
           id="upcbtn-${d.id}"
           onchange="updateField(${d.id},'upc',this.value)"
-          onblur="(function(el,id){ const val=el.value.trim().replace(/[^0-9]/g,''); const orig=el.getAttribute('data-original-upc'); if(val && val!==orig){ updateField(id,'upc',val); el.value=val; el.setAttribute('data-original-upc',val); lookupByUPC(id,val); } })(this,${d.id})"
+          onblur="(function(el,id){ const val=el.value.trim().replace(/[^0-9]/g,''); const orig=el.getAttribute('data-original-upc'); if(val && val!==orig){ updateField(id,'upc',val); el.value=val; el.setAttribute('data-original-upc',val); } })(this,${d.id})"
           onkeydown="if(event.key==='Enter'){ event.preventDefault(); this.blur(); }"
           style="width:130px;font-family:'JetBrains Mono',monospace;font-size:12px;" />
         <div style="display:flex;gap:4px;margin-top:3px;">
@@ -3122,7 +3137,7 @@ function rowHTML(d, i) { return `
           value="${escHtml(d.mpn||'')}"
           data-original-mpn="${escHtml(d.mpn||'')}"
           onchange="updateField(${d.id},'mpn',this.value)"
-          onblur="(function(el,id){ const val=el.value.trim(); const orig=el.getAttribute('data-original-mpn'); if(val && val!==orig){ updateField(id,'mpn',val); el.setAttribute('data-original-mpn',val); lookupByMPN(id,val); } })(this,${d.id})"
+          onblur="(function(el,id){ const val=el.value.trim(); const orig=el.getAttribute('data-original-mpn'); if(val && val!==orig){ updateField(id,'mpn',val); el.setAttribute('data-original-mpn',val); } })(this,${d.id})"
           onkeydown="if(event.key==='Enter'){ event.preventDefault(); this.blur(); }"
           style="width:120px;font-family:'JetBrains Mono',monospace;font-size:12px;" />
         <div style="display:flex;gap:4px;margin-top:3px;">
