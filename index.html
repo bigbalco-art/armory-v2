@@ -1264,6 +1264,7 @@
         <label>UPC</label>
         <div style="display:flex;gap:6px;align-items:center;">
           <input type="text" id="fUPC" placeholder="12-digit barcode"
+            inputmode="numeric" oninput="this.value=this.value.replace(/[^0-9]/g,'')"
             style="flex:1;font-family:'JetBrains Mono',monospace;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:9px 10px;border-radius:6px;font-size:13px;outline:none;" />
           <button type="button" class="btn btn-ghost btn-sm" onclick="manualLookup('upc')">🔍 Search</button>
           <label class="btn btn-ghost btn-sm" style="cursor:pointer;" title="Scan box/label to fill UPC and all fields">📷 Scan
@@ -2377,27 +2378,35 @@ function viewPhoto(id) {
   // Load image via Firebase getDownloadURL then XHR as blob —
   // XHR with Firebase token works even without CORS headers
   let _sourceBitmap = null;
-  img.src = photoSrc; // show immediately while we load bitmap in background
+  img.src = photoSrc; // show immediately
   (async () => {
     try {
-      // Re-get a fresh signed URL, then XHR it as a blob
-      // Firebase signed URLs include auth token so XHR works without CORS config
-      const storageRef = firebase.storage().ref(`firearms/${id}.jpg`);
-      const signedUrl = await storageRef.getDownloadURL();
-      const xhr = new XMLHttpRequest();
-      xhr.open('GET', signedUrl, true);
-      xhr.responseType = 'blob';
-      xhr.onload = async () => {
-        if (xhr.status === 200) {
-          try {
-            _sourceBitmap = await createImageBitmap(xhr.response);
-          } catch(e) { console.warn('createImageBitmap failed:', e.message); }
-        }
-      };
-      xhr.onerror = () => console.warn('XHR blob load failed');
-      xhr.send();
+      // If photo is base64 (from modal upload), load directly from img element
+      if (photoSrc.startsWith('data:')) {
+        _sourceBitmap = await createImageBitmap(img);
+      } else {
+        // Firebase Storage URL — use XHR with signed URL
+        const storageRef = firebase.storage().ref(`firearms/${id}.jpg`);
+        const signedUrl = await storageRef.getDownloadURL();
+        const xhr = new XMLHttpRequest();
+        xhr.open('GET', signedUrl, true);
+        xhr.responseType = 'blob';
+        xhr.onload = async () => {
+          if (xhr.status === 200) {
+            try { _sourceBitmap = await createImageBitmap(xhr.response); }
+            catch(e) { console.warn('createImageBitmap failed:', e.message); }
+          }
+        };
+        xhr.onerror = () => {
+          // Fallback: load from img element directly
+          if (img.complete) createImageBitmap(img).then(b => _sourceBitmap = b).catch(()=>{});
+        };
+        xhr.send();
+      }
     } catch(e) {
-      console.warn('Bitmap load failed:', e.message);
+      // Last resort fallback — try loading from img element
+      try { if (img.complete) _sourceBitmap = await createImageBitmap(img); }
+      catch(e2) { console.warn('Bitmap load failed:', e2.message); }
     }
   })();
 
@@ -2996,9 +3005,10 @@ function filterTable() {
     if(serialFilter==='has_serial' && !hasSerial) return false;
     if(serialFilter==='no_serial' && hasSerial) return false;
     const priceFilter = (document.getElementById('filterPrice')||{}).value||'';
+    const isOwnedEntry = d.status === 'owned' || d.status === 'new';
     const hasPrice = !!(d.purchasePrice && String(d.purchasePrice).trim());
-    if(priceFilter==='has_price' && !hasPrice) return false;
-    if(priceFilter==='no_price' && hasPrice) return false;
+    if(priceFilter==='has_price' && (!hasPrice || !isOwnedEntry)) return false;
+    if(priceFilter==='no_price' && (!isOwnedEntry || hasPrice)) return false;
     return true;
   });
   renderTable();
@@ -3051,6 +3061,10 @@ function renderMobileCards() {
           <span class="fire-card-label">Purchase Price</span>
           <span class="fire-card-val">${d.purchasePrice ? '$'+parseFloat(d.purchasePrice).toLocaleString() : '—'}</span>
         </div>
+        ${d.purchaseDate ? `<div class="fire-card-field">
+          <span class="fire-card-label">Purchase Date</span>
+          <span class="fire-card-val">${toDisplayDate(d.purchaseDate)}</span>
+        </div>` : ''}
         ${d.upc ? `<div class="fire-card-field">
           <span class="fire-card-label">UPC</span>
           <span class="fire-card-val" style="font-family:monospace;font-size:10px;">${escHtml(d.upc)}</span>
